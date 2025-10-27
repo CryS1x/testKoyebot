@@ -4,10 +4,11 @@ from discord import app_commands
 import json
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import asyncio
 from dotenv import load_dotenv
+import math
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -20,34 +21,15 @@ CONFIG = {
     'TEXT_XP_MAX': 10,
     'TEXT_COOLDOWN': 30,  # секунды
     'VOICE_XP_PER_MINUTE': 5,
-    'XP_PER_LEVEL': 100
+    'XP_PER_LEVEL': 100,
+    'ADMIN_ALERT_ENABLED': True
 }
 
 if not CONFIG['TOKEN']:
     raise ValueError("Токен бота не найден! Установите переменную DISCORD_BOT_TOKEN")
 
 # Инициализация бота
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.voice_states = True
-intents.guilds = True
-intents.moderation = True
-intents.integrations = True
-intents.webhooks = True
-intents.invites = True
-intents.voice_states = True
-intents.presences = True
-intents.message_content = True
-intents.reactions = True
-intents.guild_messages = True
-intents.guild_reactions = True
-intents.guild_typing = True
-intents.dm_messages = True
-intents.dm_reactions = True
-intents.dm_typing = True
-intents.guild_scheduled_events = True
-
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Хранилище данных
@@ -65,7 +47,14 @@ COLORS = {
     'WARNING': discord.Color.orange(),
     'ERROR': discord.Color.red(),
     'MODERATION': discord.Color.purple(),
-    'LEVEL_UP': discord.Color.gold()
+    'LEVEL_UP': discord.Color.gold(),
+    'CREATE': discord.Color.green(),
+    'DELETE': discord.Color.red(),
+    'UPDATE': discord.Color.blue(),
+    'BAN': discord.Color.dark_red(),
+    'KICK': discord.Color.orange(),
+    'VOICE': discord.Color.purple(),
+    'MESSAGE': discord.Color.blurple()
 }
 
 # Загрузка данных
@@ -190,12 +179,98 @@ async def send_level_up_notification(user_id, xp_type, old_level, new_level, gui
         # Если канал уведомлений не установлен, отправляем в системный канал
         if guild.system_channel:
             await guild.system_channel.send(embed=embed)
-            
-    except Exception as e:
-        print(f"Ошибка отправки уведомления о уровне: {e}")
 
-# Логирование действий
-async def log_action(guild, action, description, color=COLORS['INFO'], target=None, moderator=None, reason=None):
+# Улучшенная функция получения информации из аудит-логов
+async def get_audit_log_info(guild, action, target=None):
+    try:
+        print(f"Поиск в аудит-логе: {action} для {target}")
+        async for entry in guild.audit_logs(limit=5, action=action):
+            print(f"Найдена запись: {entry.action}, цель: {entry.target}, пользователь: {entry.user}")
+            # Простая проверка как в рабочем коде
+            if target is None:
+                return entry.user, entry.reason or "Не указана"
+            elif hasattr(entry, 'target') and entry.target and entry.target.id == target.id:
+                return entry.user, entry.reason or "Не указана"
+    return None, "Не указана"
+
+# Альтернативная функция для поиска модератора в определенных случаях
+async def find_moderator_for_role_change(guild, target_user, role=None, is_add=True):
+    """Улучшенная функция для поиска модератора при изменении ролей"""
+    try:
+        action = discord.AuditLogAction.member_role_update
+        async for entry in guild.audit_logs(limit=5, action=action):
+            if entry.target.id == target_user.id:
+                # Проверяем время (действие должно быть не старше 10 секунд)
+                time_diff = (datetime.now().astimezone() - entry.created_at).total_seconds()
+                if time_diff < 10:  # 10 секунд - разумный порог
+                    return entry.user, entry.reason or "Не указана"
+    
+    return None, "Не указана"
+
+async def send_admin_alert(guild, action, moderator, details):
+    try:
+        # ID создателя бота - замените на ваш реальный ID
+        BOT_OWNER_ID = 852962557002252289  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ID
+        
+        # Получаем владельца сервера
+        owner = guild.owner
+        # Получаем создателя бота
+        bot_owner = await bot.fetch_user(BOT_OWNER_ID)
+        
+        alert_embed = discord.Embed(
+            title="🚨 КРИТИЧЕСКОЕ СОБЫТИЕ",
+            description=f"**Обнаружено подозрительное действие на сервере {guild.name}**",
+            color=discord.Color.red(),
+            timestamp=datetime.now()
+        )
+        
+        alert_embed.add_field(
+            name="⚠️ Действие",
+            value=action,
+            inline=False
+        )
+        
+        alert_embed.add_field(
+            name="🛡️ Администратор",
+            value=f"{moderator.mention} (`{moderator.name}` | ID: `{moderator.id}`)",
+            inline=True
+        )
+        
+        alert_embed.add_field(
+            name="📋 Детали",
+            value=details,
+            inline=False
+        )
+        
+        alert_embed.add_field(
+            name="⏰ Время",
+            value=f"<t:{int(datetime.now().timestamp())}:F>",
+            inline=True
+        )
+        
+        alert_embed.set_footer(text="Рекомендуется проверить действия администратора")
+        
+        # Отправляем владельцу сервера
+        if owner:
+            try:
+                await owner.send(embed=alert_embed)
+                print(f"✅ Тревога отправлена владельцу сервера: {owner.name}")
+            except discord.Forbidden:
+                # Если нельзя отправить ЛС, попробуем отправить в системный канал
+                if guild.system_channel:
+                    await guild.system_channel.send(f"{owner.mention}", embed=alert_embed)
+                    print(f"✅ Тревога отправлена в системный канал для владельца")
+        
+        # Отправляем создателю бота (если это не тот же человек)
+        if bot_owner and bot_owner.id != owner.id:
+            try:
+                await bot_owner.send(embed=alert_embed)
+                print(f"✅ Тревога отправлена создателю бота: {bot_owner.name}")
+            except discord.Forbidden:
+                print(f"❌ Не удалось отправить тревогу создателю бота: нет прав для ЛС")
+
+# Логирование действий с защитой от rate limits
+async def log_action(guild, action, description, color=COLORS['INFO'], target=None, moderator=None, reason=None, extra_fields=None):
     try:
         log_channel_id = get_log_channel(guild.id)
         if not log_channel_id:
@@ -212,57 +287,90 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
             timestamp=datetime.now()
         )
         
+        # Участник (тот, с кем произошло действие)
         if target:
-            embed.add_field(name="👤 Участник", value=f"{target.mention} (`{target.id}`)", inline=True)
+            embed.add_field(
+                name="👤 Участник", 
+                value=f"{target.mention} (`{target.id}`)\nИмя: `{target.name}`\nДискриминатор: `{target.discriminator}`", 
+                inline=True
+            )
         
+        # Модератор (тот, кто совершил действие)
         if moderator:
-            embed.add_field(name="🛡️ Модератор", value=f"{moderator.mention} (`{moderator.id}`)", inline=True)
+            embed.add_field(
+                name="🛡️ Модератор", 
+                value=f"{moderator.mention} (`{moderator.id}`)\nИмя: `{moderator.name}`", 
+                inline=True
+            )
+        # Для действий, где есть участник но нет модератора (голосовые каналы, редактирование сообщений и т.д.)
+        elif target:
+            embed.add_field(
+                name="🛡️ Взаимодействовал", 
+                value=f"{target.mention} (`{target.id}`)\nИмя: `{target.name}`", 
+                inline=True
+            )
         
-        if reason:
+        # Причина
+        if reason and reason != "Не указана":
             embed.add_field(name="📋 Причина", value=reason, inline=False)
+        
+        # Дополнительные поля
+        if extra_fields:
+            for field_name, field_value in extra_fields.items():
+                embed.add_field(name=field_name, value=field_value, inline=False)
         
         embed.set_footer(text=f"ID: {target.id if target else 'Система'}")
         
-        await channel.send(embed=embed)
+        # Задержка для избежания rate limits
+        await asyncio.sleep(0.5)
         
-    except Exception as e:
-        print(f"Ошибка логирования: {e}")
+        # Пытаемся отправить сообщение
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            # Если нет прав для отправки в канал логов
+            if CONFIG['ADMIN_ALERT_ENABLED'] and moderator:
+                await send_admin_alert(
+                    guild,
+                    "Попытка отправить лог в канал без прав",
+                    moderator,
+                    f"Бот не имеет прав для отправки сообщений в канал логов {channel.mention}"
+                )
+            return
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limit
+                retry_after = e.retry_after
+                print(f"Rate limit hit, retrying in {retry_after} seconds")
+                await asyncio.sleep(retry_after)
+                await log_action(guild, action, description, color, target, moderator, reason, extra_fields)
+            else:
+                print(f"Ошибка логирования: {e}")
 
-# Получение прогресс-бара
-def get_progress_bar(current_xp, level, length=20):
-    xp_for_current_level = (level - 1) * CONFIG['XP_PER_LEVEL']
-    xp_for_next_level = level * CONFIG['XP_PER_LEVEL']
-    xp_in_level = current_xp - xp_for_current_level
-    xp_needed = xp_for_next_level - xp_for_current_level
-    
-    if level >= CONFIG['MAX_LEVEL']:
-        filled = length
-    else:
-        filled = int((xp_in_level / xp_needed) * length)
-    
-    bar = '█' * filled + '░' * (length - filled)
-    percentage = int((xp_in_level / xp_needed) * 100) if level < CONFIG['MAX_LEVEL'] else 100
-    
-    return bar, percentage, xp_in_level, xp_needed
-
-# Создание улучшенной карточки уровня
+# Создание современной карточки уровня
 def create_level_embed(user, member):
     data = get_user_data(user.id)
-    
-    # Прогресс-бары
-    text_bar, text_pct, text_current, text_needed = get_progress_bar(data['text_xp'], data['text_level'])
-    voice_bar, voice_pct, voice_current, voice_needed = get_progress_bar(data['voice_xp'], data['voice_level'])
-    total_bar, total_pct, total_current, total_needed = get_progress_bar(data['total_xp'], data['total_level'])
     
     # Определение цвета по общему уровню
     if data['total_level'] >= 500:
         color = discord.Color.gold()
+        rank_emoji = "🏆"
+        rank_name = "LEGEND"
     elif data['total_level'] >= 250:
         color = discord.Color.purple()
+        rank_emoji = "⚡"
+        rank_name = "MASTER"
     elif data['total_level'] >= 100:
         color = discord.Color.blue()
-    else:
+        rank_emoji = "🔥"
+        rank_name = "EXPERT"
+    elif data['total_level'] >= 50:
         color = discord.Color.green()
+        rank_emoji = "⭐"
+        rank_name = "ADVANCED"
+    else:
+        color = discord.Color.light_gray()
+        rank_emoji = "🌱"
+        rank_name = "BEGINNER"
     
     embed = discord.Embed(
         color=color,
@@ -276,46 +384,47 @@ def create_level_embed(user, member):
     
     embed.set_thumbnail(url=user.display_avatar.url)
     
-    # Общая информация
+    # Основная статистика
     embed.add_field(
-        name="👤 Общая информация",
-        value=f"**Уровень:** `{data['total_level']}`\n"
-              f"**Опыт:** `{data['total_xp']:,}` XP\n"
-              f"**Прогресс:** {total_bar}\n"
-              f"**{total_pct}%** ({total_current}/{total_needed} XP)",
+        name=f"`{rank_emoji} Ранг: {rank_name}`",
+        value=f"-# **Общий уровень:** `{data['total_level']}`\n"
+              f"-# **Всего опыта:** `{data['total_xp']:,} XP`\n"
+              f"-# **Прогресс до след. ур.:** `{data['total_xp'] % CONFIG['XP_PER_LEVEL']}/{CONFIG['XP_PER_LEVEL']} XP`",
         inline=False
     )
     
-    # Текстовый чат
-    text_status = "🏆 МАКСИМУМ" if data['text_level'] >= CONFIG['MAX_LEVEL'] else f"{text_current}/{text_needed} XP"
+    # Детальная статистика
     embed.add_field(
-        name="💬 Текстовый чат",
-        value=f"**Уровень:** `{data['text_level']}`\n"
-              f"**Опыт:** `{data['text_xp']:,}` XP\n"
-              f"**Прогресс:** {text_bar}\n"
-              f"**{text_pct}%** ({text_status})",
+        name="`💬 Текстовый чат`",
+        value=f"-# **Уровень:** `{data['text_level']}`\n"
+              f"-# **Опыт:** `{data['text_xp']:,} XP`",
         inline=True
     )
     
-    # Голосовой чат
-    voice_status = "🏆 МАКСИМУМ" if data['voice_level'] >= CONFIG['MAX_LEVEL'] else f"{voice_current}/{voice_needed} XP"
     embed.add_field(
-        name="🎤 Голосовой чат",
-        value=f"**Уровень:** `{data['voice_level']}`\n"
-              f"**Опыт:** `{data['voice_xp']:,}` XP\n"
-              f"**Прогресс:** {voice_bar}\n"
-              f"**{voice_pct}%** ({voice_status})",
+        name="`🎤 Голосовой чат`",
+        value=f"-# **Уровень:** `{data['voice_level']}`\n"
+              f"-# **Опыт:** `{data['voice_xp']:,} XP`",
         inline=True
     )
     
     # Достижения
-    next_milestone = ((data['total_level'] // 100) + 1) * 100
-    if next_milestone <= CONFIG['MAX_LEVEL']:
-        xp_needed_total = next_milestone * CONFIG['XP_PER_LEVEL'] - data['total_xp']
+    achievements = []
+    if data['text_level'] >= 100:
+        achievements.append("📚 Мастер слов")
+    if data['voice_level'] >= 100:
+        achievements.append("🎧 Голосовой ветеран")
+    if data['total_level'] >= 500:
+        achievements.append("🏅 Абсолютный чемпион")
+    if data['text_xp'] > 10000:
+        achievements.append("💬 Активный писатель")
+    if data['voice_xp'] > 10000:
+        achievements.append("🎤 Постоянный спикер")
+    
+    if achievements:
         embed.add_field(
-            name="🎯 Следующая цель",
-            value=f"**Уровень {next_milestone}**\n"
-                  f"Осталось: `{xp_needed_total:,}` XP",
+            name="🏅 Достижения",
+            value=" • ".join(achievements[:3]),
             inline=False
         )
     
@@ -380,10 +489,147 @@ def create_leaderboard_embed(guild, top_type='total'):
     
     return embed
 
+# Создание embed статистики пользователя
+def create_user_stats_embed(member):
+    joined_days = (datetime.now().replace(tzinfo=None) - member.joined_at.replace(tzinfo=None)).days
+    created_days = (datetime.now().replace(tzinfo=None) - member.created_at.replace(tzinfo=None)).days
+    
+    roles = [role for role in member.roles if role != member.guild.default_role]
+    top_role = member.top_role
+    
+    embed = discord.Embed(
+        title=f"📈 Статистика {member.display_name}",
+        color=member.color if member.color != discord.Color.default() else discord.Color.blue(),
+        timestamp=datetime.now()
+    )
+    
+    embed.set_thumbnail(url=member.display_avatar.url)
+    
+    # Статус пользователя (только базовый статус)
+    status_dict = {
+        'online': '🟢 В сети',
+        'idle': '🟡 Неактивен', 
+        'dnd': '🔴 Не беспокоить',
+        'offline': '⚫ Не в сети'
+    }
+    
+    current_status = str(member.status)
+    status_text = status_dict.get(current_status, '⚫ Не в сети')
+    
+    # Основная информация
+    embed.add_field(
+        name="👤 Основная информация",
+        value=f"**Имя:** `{member.name}`\n"
+              f"**ID:** `{member.id}`\n"
+              f"**Статус:** {status_text}\n"
+              f"**Бот:** {'✅' if member.bot else '❌'}\n"
+              f"**Отображаемое имя:** `{member.display_name}`",
+        inline=False
+    )
+    
+    # Даты
+    embed.add_field(
+        name="📅 Даты",
+        value=f"**Присоединился:** <t:{int(member.joined_at.timestamp())}:R>\n"
+              f"**На сервере:** `{joined_days}` дней\n"
+              f"**Аккаунт создан:** <t:{int(member.created_at.timestamp())}:R>\n"
+              f"**Возраст аккаунта:** `{created_days}` дней",
+        inline=False
+    )
+    
+    # Роли
+    roles_text = f"**Главная роль:** {top_role.mention}\n**Всего ролей:** `{len(roles)}`"
+    if roles:
+        roles_text += f"\n**Роли:** {', '.join([role.mention for role in roles[:3]])}"
+        if len(roles) > 3:
+            roles_text += f" *... и еще {len(roles) - 3}*"
+    
+    embed.add_field(
+        name="🎭 Роли",
+        value=roles_text,
+        inline=False
+    )
+    
+    # Активность (только если видна)
+    activity_text = "❌ Не активно"
+    if member.activity:
+        activity = member.activity
+        try:
+            if isinstance(activity, discord.Game):
+                activity_text = f"🎮 Играет в **{activity.name}**"
+            elif isinstance(activity, discord.Streaming):
+                activity_text = f"📺 Стримит **{activity.game}**"
+            elif isinstance(activity, discord.Spotify):
+                activity_text = f"🎵 Слушает **{activity.title}**"
+            elif isinstance(activity, discord.CustomActivity):
+                activity_text = f"💬 **{activity.name}**"
+            else:
+                activity_text = f"📱 **{activity.name}**"
+        except:
+            activity_text = "📱 Активность"
+    
+    embed.add_field(
+        name="🎯 Активность",
+        value=activity_text,
+        inline=True
+    )
+    
+    # Уровни
+    user_level_data = get_user_data(member.id)
+    level_text = f"**Общий уровень:** `{user_level_data['total_level']}`\n"
+    level_text += f"**Текстовый:** `{user_level_data['text_level']}`\n"
+    level_text += f"**Голосовой:** `{user_level_data['voice_level']}`\n"
+    level_text += f"**Всего опыта:** `{user_level_data['total_xp']:,} XP`"
+    
+    embed.add_field(
+        name="📊 Уровни",
+        value=level_text,
+        inline=True
+    )
+    
+    # Дополнительная информация
+    extra_info = ""
+    if member.premium_since:
+        boost_days = (datetime.now().replace(tzinfo=None) - member.premium_since.replace(tzinfo=None)).days
+        extra_info += f"🚀 **Бустит сервер:** {boost_days} дней\n"
+    
+    if member.is_timed_out():
+        timeout_until = member.timed_out_until
+        if timeout_until:
+            timeout_left = timeout_until - datetime.now().astimezone()
+            hours_left = int(timeout_left.total_seconds() // 3600)
+            minutes_left = int((timeout_left.total_seconds() % 3600) // 60)
+            extra_info += f"⏰ **В таймауте:** {hours_left}ч {minutes_left}м\n"
+    
+    if member.guild_permissions.administrator:
+        extra_info += "👑 **Администратор**\n"
+    elif member.guild_permissions.manage_messages:
+        extra_info += "🛡️ **Модератор**\n"
+    
+    if extra_info:
+        embed.add_field(
+            name="💎 Дополнительно",
+            value=extra_info.strip(),
+            inline=False
+        )
+    
+    embed.set_footer(text=f"ID: {member.id} | Запрошено")
+    
+    return embed
+
 # Событие: бот готов
 @bot.event
 async def on_ready():
     print(f'✅ Бот {bot.user.name} запущен!')
+    
+    # Проверяем права на серверах
+    for guild in bot.guilds:
+        perms = guild.me.guild_permissions
+        if not perms.view_audit_log:
+            print(f'⚠️ Внимание: Бот не имеет прав на просмотр аудит-логов на сервере {guild.name}')
+        if not perms.administrator:
+            print(f'ℹ️ Бот не имеет прав администратора на сервере {guild.name}')
+    
     load_data()
     
     try:
@@ -398,7 +644,7 @@ async def on_ready():
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
-        return
+        return await bot.process_commands(message)
     
     user_id = str(message.author.id)
     current_time = time.time()
@@ -406,7 +652,7 @@ async def on_message(message):
     # Проверка кулдауна
     if user_id in cooldowns:
         if current_time - cooldowns[user_id] < CONFIG['TEXT_COOLDOWN']:
-            return
+            return await bot.process_commands(message)
     
     # Добавление опыта
     xp = random.randint(CONFIG['TEXT_XP_MIN'], CONFIG['TEXT_XP_MAX'])
@@ -426,12 +672,24 @@ async def on_voice_state_update(member, before, after):
     
     # Пользователь зашел в голосовой канал
     if before.channel is None and after.channel is not None:
-        voice_tracking[user_id] = time.time()
+        voice_tracking[user_id] = {
+            'start_time': time.time(),
+            'guild_id': member.guild.id
+        }
+        
+        await log_action(
+            member.guild,
+            "🎤 Вход в голосовой канал",
+            f"**Канал:** {after.channel.mention}",
+            COLORS['VOICE'],
+            member
+        )
     
     # Пользователь вышел из голосового канала
     elif before.channel is not None and after.channel is None:
         if user_id in voice_tracking:
-            join_time = voice_tracking[user_id]
+            tracking_data = voice_tracking[user_id]
+            join_time = tracking_data['start_time']
             duration = time.time() - join_time
             minutes = int(duration / 60)
             
@@ -439,55 +697,99 @@ async def on_voice_state_update(member, before, after):
                 xp = minutes * CONFIG['VOICE_XP_PER_MINUTE']
                 await add_xp(user_id, xp, 'voice', member.guild)
             
+            await log_action(
+                member.guild,
+                "🎤 Выход из голосового канала",
+                f"**Канал:** {before.channel.mention}\n**Продолжительность:** `{minutes} минут`",
+                COLORS['VOICE'],
+                member
+            )
+            
             del voice_tracking[user_id]
+    
+    # Пользователь перешел между каналами
+    elif before.channel is not None and after.channel is not None and before.channel != after.channel:
+        await log_action(
+            member.guild,
+            "🎤 Переход между каналами",
+            f"**Из:** {before.channel.mention}\n**В:** {after.channel.mention}",
+            COLORS['VOICE'],
+            member
+        )
 
 # Периодическое начисление опыта в голосовых каналах
 @tasks.loop(minutes=1)
 async def voice_xp_task():
-    for user_id in list(voice_tracking.keys()):
-        guild_id = user_id  # Здесь нужно определить guild_id из voice_tracking
-        # Для простоты начисляем без уведомлений в этой задаче
-        add_xp(user_id, CONFIG['VOICE_XP_PER_MINUTE'], 'voice')
+    current_time = time.time()
+    for user_id, tracking_data in list(voice_tracking.items()):
+        try:
+            guild = bot.get_guild(tracking_data['guild_id'])
+            if guild:
+                await add_xp(user_id, CONFIG['VOICE_XP_PER_MINUTE'], 'voice', guild)
+        except Exception as e:
+            print(f"Ошибка в voice_xp_task: {e}")
+            continue
 
-# События для логирования
+# ========== ПОЛНАЯ СИСТЕМА ЛОГИРОВАНИЯ ==========
+
 @bot.event
 async def on_member_join(member):
+    account_age = (datetime.now().replace(tzinfo=None) - member.created_at.replace(tzinfo=None)).days
     await log_action(
         member.guild,
-        "Участник присоединился",
-        f"Новый участник присоединился к серверу",
+        "✅ Участник присоединился",
+        f"**Аккаунт создан:** `{account_age}` дней назад",
         COLORS['SUCCESS'],
-        member
+        target=member
     )
 
 @bot.event
 async def on_member_remove(member):
     await log_action(
         member.guild,
-        "Участник покинул",
-        f"Участник покинул сервер",
+        "🚪 Участник покинул",
+        f"**Присоединился:** <t:{int(member.joined_at.timestamp())}:R>",
         COLORS['WARNING'],
-        member
+        target=member
     )
 
 @bot.event
 async def on_member_ban(guild, user):
+    moderator, reason = await get_audit_log_info(guild, discord.AuditLogAction.ban, user)
     await log_action(
         guild,
-        "Участник забанен",
-        f"Участник был забанен на сервере",
-        COLORS['ERROR'],
-        user
+        "🔨 Бан участника",
+        f"**Пользователь забанен на сервере**",
+        COLORS['BAN'],
+        target=user,
+        moderator=moderator,
+        reason=reason
     )
 
 @bot.event
 async def on_member_unban(guild, user):
+    moderator, reason = await get_audit_log_info(guild, discord.AuditLogAction.unban, user)
     await log_action(
         guild,
-        "Участник разбанен",
-        f"С участника снят бан",
+        "🔓 Разбан участника",
+        f"**С пользователя снят бан**",
         COLORS['SUCCESS'],
-        user
+        target=user,
+        moderator=moderator,
+        reason=reason
+    )
+
+@bot.event
+async def on_member_kick(guild, user):
+    moderator, reason = await get_audit_log_info(guild, discord.AuditLogAction.kick, user)
+    await log_action(
+        guild,
+        "👢 Кик участника",
+        f"**Пользователь кикнут с сервера**",
+        COLORS['KICK'],
+        target=user,
+        moderator=moderator,
+        reason=reason
     )
 
 @bot.event
@@ -497,47 +799,158 @@ async def on_member_update(before, after):
         added_roles = [role for role in after.roles if role not in before.roles]
         removed_roles = [role for role in before.roles if role not in after.roles]
         
-        if added_roles:
-            for role in added_roles:
-                await log_action(
-                    after.guild,
-                    "Роль выдана",
-                    f"Участнику выдана роль {role.mention}",
-                    COLORS['MODERATION'],
-                    after
-                )
+        # Используем специальную функцию для поиска модератора при изменении ролей
+        for role in added_roles:
+            moderator, reason = await find_moderator_for_role_change(after.guild, after, role, is_add=True)
+            await log_action(
+                after.guild,
+                "➕ Роль выдана",
+                f"**Роль:** {role.mention}",
+                COLORS['SUCCESS'],
+                target=after,
+                moderator=moderator,
+                reason=reason,
+                extra_fields={"🎭 Роль": f"{role.mention} (`{role.name}`)"}
+            )
         
-        if removed_roles:
-            for role in removed_roles:
-                await log_action(
-                    after.guild,
-                    "Роль изъята",
-                    f"С участника снята роль {role.mention}",
-                    COLORS['MODERATION'],
-                    after
-                )
+        for role in removed_roles:
+            moderator, reason = await find_moderator_for_role_change(after.guild, after, role, is_add=False)
+            await log_action(
+                after.guild,
+                "➖ Роль изъята",
+                f"**Роль:** {role.mention}",
+                COLORS['ERROR'],
+                target=after,
+                moderator=moderator,
+                reason=reason,
+                extra_fields={"🎭 Роль": f"{role.mention} (`{role.name}`)"}
+            )
     
     # Изменение ника
     if before.nick != after.nick:
+        moderator, reason = await get_audit_log_info(after.guild, discord.AuditLogAction.member_update, after)
         await log_action(
             after.guild,
-            "Изменен никнейм",
+            "📝 Изменен никнейм",
             f"**Был:** `{before.nick or before.display_name}`\n**Стал:** `{after.nick or after.display_name}`",
-            COLORS['INFO'],
-            after
+            COLORS['UPDATE'],
+            target=after,
+            moderator=moderator,
+            reason=reason
         )
+    
+    # Таймаут
+    if before.timed_out_until != after.timed_out_until:
+        moderator, reason = await get_audit_log_info(after.guild, discord.AuditLogAction.member_update, after)
+        if after.timed_out_until:  # Таймаут установлен
+            duration = (after.timed_out_until - datetime.now().astimezone()).total_seconds() / 60
+            await log_action(
+                after.guild,
+                "⏰ Таймаут участника",
+                f"**Длительность:** `{duration:.1f}` минут",
+                COLORS['WARNING'],
+                target=after,
+                moderator=moderator,
+                reason=reason
+            )
+        else:  # Таймаут снят
+            await log_action(
+                after.guild,
+                "🔊 Снятие таймаута",
+                f"**Таймаут досрочно снят**",
+                COLORS['SUCCESS'],
+                target=after,
+                moderator=moderator,
+                reason=reason
+            )
 
+@bot.event
+async def on_raw_message_delete(payload):
+    # Проверяем, было ли удалено сообщение в гильдии
+    if not payload.guild_id:
+        return
+    
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+    
+    # Получаем информацию о сообщении из кэша
+    message = payload.cached_message
+    
+    # Если сообщение есть в кэше и это сообщение бота
+    if message and message.author.id == bot.user.id:
+        # Ищем кто удалил сообщение
+        moderator, reason = await get_audit_log_info(guild, discord.AuditLogAction.message_delete)
+        
+        if moderator and moderator.guild_permissions.administrator:
+            # Если администратор удалил лог - отправляем тревогу
+            if CONFIG['ADMIN_ALERT_ENABLED']:
+                await send_admin_alert(
+                    guild,
+                    "Удаление логов бота администратором",
+                    moderator,
+                    f"**Канал:** <#{payload.channel_id}>\n"
+                    f"**Удаленное сообщение:** {message.content[:200] if message.content else 'Сообщение с вложениями'}\n"
+                    f"**Причина:** {reason}\n\n"
+                    f"🚨 **ВНИМАНИЕ:** Администратор удалил логи системы! Возможно, он пытается скрыть свои действия."
+                )
+        
+        # Логируем удаление сообщения бота (логов)
+        content = message.content or "*Сообщение без текста*"
+        attachments_info = f"\n**Вложения:** {len(message.attachments)}" if message.attachments else ""
+        
+        await log_action(
+            guild,
+            "🗑️ Удаление логов бота",
+            f"**Канал:** <#{payload.channel_id}>\n**Содержимое:** {content[:500]}{attachments_info}",
+            COLORS['DELETE'],
+            target=message.author,
+            moderator=moderator,
+            reason=reason,
+            extra_fields={"💬 Канал": f"<#{payload.channel_id}>"}
+        )
+        return
+    
+    # Если сообщение не в кэше, но мы знаем что это был канал логов
+    channel = bot.get_channel(payload.channel_id)
+    if channel and hasattr(channel, 'name') and 'log' in channel.name.lower():
+        # Это могло быть сообщение бота в канале логов
+        moderator, reason = await get_audit_log_info(guild, discord.AuditLogAction.message_delete)
+        
+        if moderator and moderator.guild_permissions.administrator:
+            if CONFIG['ADMIN_ALERT_ENABLED']:
+                await send_admin_alert(
+                    guild,
+                    "Удаление логов бота администратором",
+                    moderator,
+                    f"**Канал:** {channel.mention}\n"
+                    f"**Сообщение ID:** {payload.message_id}\n"
+                    f"**Причина:** {reason}\n\n"
+                    f"🚨 **ВНИМАНИЕ:** Администратор удалил логи системы! Сообщение не было в кэше."
+                )
+
+# Оставляем старую функцию для обычных сообщений
 @bot.event
 async def on_message_delete(message):
     if message.author.bot or not message.guild:
         return
     
+    # Логирование обычного удаления сообщений (не от бота)
+    content = message.content or "*Сообщение без текста*"
+    attachments_info = f"\n**Вложения:** {len(message.attachments)}" if message.attachments else ""
+    
+    # Ищем кто удалил сообщение
+    moderator, reason = await get_audit_log_info(message.guild, discord.AuditLogAction.message_delete)
+    
     await log_action(
         message.guild,
-        "Сообщение удалено",
-        f"**Канал:** {message.channel.mention}\n**Содержимое:** {message.content[:1000]}",
-        COLORS['WARNING'],
-        message.author
+        "🗑️ Удаление сообщения",
+        f"**Канал:** {message.channel.mention}\n**Содержимое:** {content[:500]}{attachments_info}",
+        COLORS['DELETE'],
+        target=message.author,
+        moderator=moderator,
+        reason=reason,
+        extra_fields={"💬 Канал": message.channel.mention}
     )
 
 @bot.event
@@ -545,103 +958,696 @@ async def on_message_edit(before, after):
     if before.author.bot or not before.guild or before.content == after.content:
         return
     
+    try:
+        before_content = before.content[:300] + "..." if len(before.content) > 300 else before.content or "*пустое*"
+        after_content = after.content[:300] + "..." if len(after.content) > 300 else after.content or "*пустое*"
+        
+        description = f"**Канал:** {before.channel.mention}\n**Ссылка:** [Перейти]({after.jump_url})\n**Было:** {before_content}\n**Стало:** {after_content}"
+        
+        await log_action(
+            before.guild,
+            "✏️ Редактирование",
+            description,
+            COLORS['UPDATE'],
+            target=before.author,
+            moderator=before.author,
+            extra_fields={"💬 Канал": before.channel.mention}
+        )
+        
+    except Exception as e:
+        print(f"Ошибка логирования редактирования: {e}")
+
+@bot.event
+async def on_raw_bulk_message_delete(payload):
+    if not payload.guild_id:
+        return
+    
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+    
+    channel = bot.get_channel(payload.channel_id)
+    if not channel:
+        return
+    
+    # Проверяем, были ли среди удаленных сообщения бота
+    bot_messages = []
+    for message in payload.cached_messages:
+        if message.author.id == bot.user.id:
+            bot_messages.append(message)
+    
+    if bot_messages:
+        # Ищем кто удалил сообщения
+        moderator, reason = await get_audit_log_info(guild, discord.AuditLogAction.message_bulk_delete)
+        
+        if moderator and moderator.guild_permissions.administrator:
+            # Если администратор удалил логи - отправляем тревогу
+            if CONFIG['ADMIN_ALERT_ENABLED']:
+                await send_admin_alert(
+                    guild,
+                    "Массовое удаление логов бота администратором",
+                    moderator,
+                    f"**Канал:** {channel.mention}\n"
+                    f"**Удалено сообщений бота:** {len(bot_messages)}\n"
+                    f"**Всего удалено сообщений:** {len(payload.cached_messages)}\n"
+                    f"**Причина:** {reason}\n\n"
+                    f"🚨 **КРИТИЧЕСКАЯ СИТУАЦИЯ:** Администратор массово удаляет логи системы! Требуется немедленное вмешательство."
+                )
+
+@bot.event
+async def on_bulk_message_delete(messages):
+    if not messages:
+        return
+    
+    guild = messages[0].guild
+    channel = messages[0].channel
+    
+    # Проверяем, были ли среди удаленных сообщения бота
+    bot_messages = [msg for msg in messages if msg.author.id == bot.user.id]
+    
+    if bot_messages:
+        # Ищем кто удалил сообщения
+        moderator, reason = await get_audit_log_info(guild, discord.AuditLogAction.message_bulk_delete)
+        
+        if moderator and moderator.guild_permissions.administrator:
+            # Если администратор удалил логи - отправляем тревогу
+            if CONFIG['ADMIN_ALERT_ENABLED']:
+                await send_admin_alert(
+                    guild,
+                    "Массовое удаление логов бота администратором",
+                    moderator,
+                    f"**Канал:** {channel.mention}\n"
+                    f"**Удалено сообщений бота:** {len(bot_messages)}\n"
+                    f"**Всего удалено сообщений:** {len(messages)}\n"
+                    f"**Причина:** {reason}\n\n"
+                    f"🚨 **КРИТИЧЕСКАЯ СИТУАЦИЯ:** Администратор массово удаляет логи системы! Требуется немедленное вмешательство."
+                )
+    
+    users = {}
+    for msg in messages:
+        if not msg.author.bot:
+            users[msg.author.id] = users.get(msg.author.id, 0) + 1
+    
+    users_text = "\n".join([f"• <@{uid}>: `{count}` сообщений" for uid, count in list(users.items())[:5]])
+    if len(users) > 5:
+        users_text += f"\n• ... и еще {len(users) - 5} участников"
+    
     await log_action(
-        before.guild,
-        "Сообщение изменено",
-        f"**Канал:** {before.channel.mention}\n**Было:** {before.content[:500]}\n**Стало:** {after.content[:500]}",
-        COLORS['INFO'],
-        before.author
+        guild,
+        "💥 Массовое удаление",
+        f"**Канал:** {channel.mention}\n**Сообщений:** `{len(messages)}`\n**Затронутые участники:**\n{users_text}",
+        COLORS['ERROR'],
+        moderator=moderator,
+        reason=reason,
+        extra_fields={"💬 Канал": channel.mention}
     )
 
 @bot.event
 async def on_guild_channel_create(channel):
+    moderator, reason = await get_audit_log_info(channel.guild, discord.AuditLogAction.channel_create)
+    channel_type = "💬 Текстовый" if isinstance(channel, discord.TextChannel) else "🎤 Голосовой" if isinstance(channel, discord.VoiceChannel) else "📁 Категория"
+    
     await log_action(
         channel.guild,
-        "Канал создан",
-        f"**Тип:** {'💬 Текстовый' if isinstance(channel, discord.TextChannel) else '🎤 Голосовой'}\n**Название:** {channel.mention}",
-        COLORS['SUCCESS']
+        "➕ Создание канала",
+        f"**Тип:** {channel_type}\n**Название:** {channel.mention}",
+        COLORS['CREATE'],
+        moderator=moderator,
+        reason=reason,
+        extra_fields={"📺 Канал": f"{channel.mention} (`{channel.name}`)"}
     )
 
 @bot.event
 async def on_guild_channel_delete(channel):
+    moderator, reason = await get_audit_log_info(channel.guild, discord.AuditLogAction.channel_delete)
+    channel_type = "💬 Текстовый" if isinstance(channel, discord.TextChannel) else "🎤 Голосовой" if isinstance(channel, discord.VoiceChannel) else "📁 Категория"
+    
     await log_action(
         channel.guild,
-        "Канал удален",
-        f"**Тип:** {'💬 Текстовый' if isinstance(channel, discord.TextChannel) else '🎤 Голосовой'}\n**Название:** `{channel.name}`",
-        COLORS['ERROR']
+        "➖ Удаление канала",
+        f"**Тип:** {channel_type}\n**Название:** `{channel.name}`",
+        COLORS['DELETE'],
+        moderator=moderator,
+        reason=reason,
+        extra_fields={"📺 Канал": f"`{channel.name}`"}
     )
 
 @bot.event
+async def on_guild_channel_update(before, after):
+    changes = []
+    
+    if before.name != after.name:
+        changes.append(f"**Название:** `{before.name}` → `{after.name}`")
+    
+    if before.position != after.position:
+        changes.append(f"**Позиция:** `{before.position}` → `{after.position}`")
+    
+    if hasattr(before, 'topic') and hasattr(after, 'topic') and before.topic != after.topic:
+        changes.append(f"**Топик:** `{before.topic or 'Нет'}` → `{after.topic or 'Нет'}`")
+    
+    if hasattr(before, 'slowmode_delay') and hasattr(after, 'slowmode_delay') and before.slowmode_delay != after.slowmode_delay:
+        changes.append(f"**Слоумод:** `{before.slowmode_delay}`с → `{after.slowmode_delay}`с")
+    
+    if changes:
+        moderator, reason = await get_audit_log_info(after.guild, discord.AuditLogAction.channel_update)
+        await log_action(
+            after.guild,
+            "⚙️ Обновление канала",
+            "\n".join(changes),
+            COLORS['UPDATE'],
+            moderator=moderator,
+            reason=reason,
+            extra_fields={"📺 Канал": f"{after.mention} (`{after.name}`)"}
+        )
+
+@bot.event
 async def on_guild_role_create(role):
+    moderator, reason = await get_audit_log_info(role.guild, discord.AuditLogAction.role_create)
+    
+    perms = []
+    if role.permissions.administrator:
+        perms.append("Администратор")
+    if role.permissions.manage_guild:
+        perms.append("Управление сервером")
+    if role.permissions.ban_members:
+        perms.append("Баны")
+    if role.permissions.kick_members:
+        perms.append("Кики")
+    
+    perms_text = ", ".join(perms) if perms else "Обычные права"
+    
     await log_action(
         role.guild,
-        "Роль создана",
-        f"**Роль:** {role.mention}\n**Цвет:** `{role.color}`",
-        COLORS['SUCCESS']
+        "➕ Создание роли",
+        f"**Роль:** {role.mention}\n**Права:** {perms_text}",
+        COLORS['CREATE'],
+        moderator=moderator,
+        reason=reason,
+        extra_fields={"🎭 Роль": f"{role.mention} (`{role.name}`)"}
     )
 
 @bot.event
 async def on_guild_role_delete(role):
+    moderator, reason = await get_audit_log_info(role.guild, discord.AuditLogAction.role_delete)
+    
     await log_action(
         role.guild,
-        "Роль удалена",
-        f"**Роль:** `{role.name}`\n**Цвет:** `{role.color}`",
-        COLORS['ERROR']
+        "➖ Удаление роли",
+        f"**Роль:** `{role.name}`\n**ID:** `{role.id}`",
+        COLORS['DELETE'],
+        moderator=moderator,
+        reason=reason,
+        extra_fields={"🎭 Роль": f"`{role.name}`"}
     )
 
 @bot.event
 async def on_guild_role_update(before, after):
+    changes = []
+    
     if before.name != after.name:
-        await log_action(
-            after.guild,
-            "Роль переименована",
-            f"**Было:** `{before.name}`\n**Стало:** `{after.name}`",
-            COLORS['INFO'],
-            target=None
-        )
+        changes.append(f"**Название:** `{before.name}` → `{after.name}`")
+    
+    if before.color != after.color:
+        changes.append(f"**Цвет:** `{before.color}` → `{after.color}`")
+    
+    if before.position != after.position:
+        changes.append(f"**Позиция:** `{before.position}` → `{after.position}`")
     
     if before.permissions != after.permissions:
+        changed_perms = []
+        for perm, value in after.permissions:
+            if getattr(before.permissions, perm) != value:
+                changed_perms.append(f"{'✅' if value else '❌'} {perm}")
+        
+        if changed_perms:
+            changes.append("**Права:**\n" + "\n".join(changed_perms[:5]))
+    
+    if changes:
+        moderator, reason = await get_audit_log_info(after.guild, discord.AuditLogAction.role_update)
         await log_action(
             after.guild,
-            "Изменены права роли",
-            f"**Роль:** {after.mention}",
-            COLORS['MODERATION'],
-            target=None
+            "⚙️ Обновление роли",
+            "\n".join(changes),
+            COLORS['UPDATE'],
+            moderator=moderator,
+            reason=reason,
+            extra_fields={"🎭 Роль": f"{after.mention} (`{after.name}`)"}
         )
 
-# Команда: показать свой уровень
+@bot.event
+async def on_guild_update(before, after):
+    changes = []
+    
+    if before.name != after.name:
+        changes.append(f"**Название:** `{before.name}` → `{after.name}`")
+    
+    if before.afk_channel != after.afk_channel:
+        changes.append(f"**AFK канал:** `{before.afk_channel}` → `{after.afk_channel}`")
+    
+    if before.icon != after.icon:
+        changes.append("**Иконка сервера изменена**")
+    
+    if before.banner != after.banner:
+        changes.append("**Баннер сервера изменен**")
+    
+    if changes:
+        moderator, reason = await get_audit_log_info(after, discord.AuditLogAction.guild_update)
+        await log_action(
+            after,
+            "⚙️ Обновление сервера",
+            "\n".join(changes),
+            COLORS['UPDATE'],
+            moderator=moderator,
+            reason=reason
+        )
+
+@bot.event
+async def on_invite_create(invite):
+    await log_action(
+        invite.guild,
+        "📨 Создание инвайта",
+        f"**Канал:** {invite.channel.mention}\n**Код:** `{invite.code}`",
+        COLORS['CREATE'],
+        target=invite.inviter,
+        extra_fields={"🔗 Инвайт": f"`{invite.code}`", "💬 Канал": invite.channel.mention}
+    )
+
+@bot.event
+async def on_invite_delete(invite):
+    moderator, reason = await get_audit_log_info(invite.guild, discord.AuditLogAction.invite_delete)
+    
+    await log_action(
+        invite.guild,
+        "📨 Удаление инвайта",
+        f"**Код:** `{invite.code}`\n**Канал:** {invite.channel.mention}",
+        COLORS['DELETE'],
+        moderator=moderator,
+        reason=reason,
+        extra_fields={"🔗 Инвайт": f"`{invite.code}`", "💬 Канал": invite.channel.mention}
+    )
+
+@bot.event
+async def on_webhooks_update(channel):
+    moderator, reason = await get_audit_log_info(channel.guild, discord.AuditLogAction.webhook_create)
+    await log_action(
+        channel.guild,
+        "🔗 Обновление вебхуков",
+        f"**Канал:** {channel.mention}",
+        COLORS['UPDATE'],
+        moderator=moderator,
+        reason=reason,
+        extra_fields={"💬 Канал": channel.mention}
+    )
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if member.bot:
+        return
+    
+    # Пользователь зашел в голосовой канал
+    if before.channel is None and after.channel is not None:
+        await log_action(
+            member.guild,
+            "🎤 Вход в голосовой канал",
+            f"**Канал:** {after.channel.mention}\n**Категория:** `{after.channel.category.name if after.channel.category else 'Нет'}`",
+            COLORS['VOICE'],
+            member
+        )
+    
+    # Пользователь вышел из голосового канала
+    elif before.channel is not None and after.channel is None:
+        await log_action(
+            member.guild,
+            "🎤 Выход из голосового канала",
+            f"**Канал:** {before.channel.mention}",
+            COLORS['VOICE'],
+            member
+        )
+    
+    # Пользователь перешел между каналами
+    elif before.channel is not None and after.channel is not None and before.channel != after.channel:
+        await log_action(
+            member.guild,
+            "🎤 Переход между каналами",
+            f"**Из:** {before.channel.mention}\n**В:** {after.channel.mention}",
+            COLORS['VOICE'],
+            member
+        )
+
+# Улучшенная функция логирования
+async def log_action(guild, action, description, color=COLORS['INFO'], target=None, moderator=None, reason=None, extra_fields=None):
+    try:
+        log_channel_id = get_log_channel(guild.id)
+        if not log_channel_id:
+            return
+        
+        channel = bot.get_channel(int(log_channel_id))
+        if not channel:
+            return
+        
+        embed = discord.Embed(
+            title=f"📝 {action}",
+            description=description,
+            color=color,
+            timestamp=datetime.now()
+        )
+        
+        # Всегда показываем участника, если он есть
+        if target:
+            embed.add_field(
+                name="👤 Участник", 
+                value=f"{target.mention}\nИмя: `{target.name}`\nДискриминатор: `{target.discriminator}`", 
+                inline=True
+            )
+        
+        # Всегда показываем кто взаимодействовал
+        if moderator:
+            embed.add_field(
+                name="🛡️ Взаимодействовал", 
+                value=f"{moderator.mention}\nИмя: `{moderator.name}`", 
+                inline=True
+            )
+        else:
+            embed.add_field(
+                name="🛡️ Взаимодействовал", 
+                value="❌ Неизвестно", 
+                inline=True
+            )
+        
+        # Показываем причину если есть
+        if reason and reason != "Не указана":
+            embed.add_field(name="📋 Причина", value=reason, inline=False)
+        
+        # Дополнительные поля
+        if extra_fields:
+            for field_name, field_value in extra_fields.items():
+                embed.add_field(name=field_name, value=field_value, inline=True)
+        
+        embed.set_footer(text=f"ID: {target.id if target else 'Система'}")
+        
+        # Задержка для избежания rate limits
+        await asyncio.sleep(0.5)
+        
+        # Пытаемся отправить сообщение
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            # Если нет прав для отправки в канал логов
+            if CONFIG['ADMIN_ALERT_ENABLED'] and moderator:
+                await send_admin_alert(
+                    guild,
+                    "Попытка отправить лог в канал без прав",
+                    moderator,
+                    f"Бот не имеет прав для отправки сообщений в канал логов {channel.mention}"
+                )
+            return
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limit
+                retry_after = e.retry_after
+                print(f"Rate limit hit, retrying in {retry_after} seconds")
+                await asyncio.sleep(retry_after)
+                await log_action(guild, action, description, color, target, moderator, reason, extra_fields)
+            else:
+                print(f"Ошибка логирования: {e}")
+        
+    except Exception as e:
+        print(f"Ошибка логирования: {e}")
+
+# ========== КОМАНДЫ ==========
+
 @bot.tree.command(name="уровень", description="Показать вашу карточку с уровнем")
 async def level_command(interaction: discord.Interaction):
-    embed = create_level_embed(interaction.user, interaction.user)
-    await interaction.response.send_message(embed=embed)
+    try:
+        embed = create_level_embed(interaction.user, interaction.user)
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Ошибка в команде уровень: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
 
-# Команда: посмотреть профиль
 @bot.tree.command(name="профиль", description="Посмотреть профиль пользователя")
 @app_commands.describe(пользователь="Выберите пользователя")
 async def profile_command(interaction: discord.Interaction, пользователь: discord.Member = None):
-    target = пользователь or interaction.user
-    embed = create_level_embed(target, target)
-    await interaction.response.send_message(embed=embed)
+    try:
+        target = пользователь or interaction.user
+        embed = create_level_embed(target, target)
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Ошибка в команде профиль: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
 
-# Команда: топ по текстовому
 @bot.tree.command(name="топ_текст", description="Топ-10 игроков по текстовому чату")
 async def top_text_command(interaction: discord.Interaction):
-    embed = create_leaderboard_embed(interaction.guild, 'text')
-    await interaction.response.send_message(embed=embed)
+    try:
+        embed = create_leaderboard_embed(interaction.guild, 'text')
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Ошибка в команде топ_текст: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
 
-# Команда: топ по голосовому
 @bot.tree.command(name="топ_войс", description="Топ-10 игроков по голосовому чату")
 async def top_voice_command(interaction: discord.Interaction):
-    embed = create_leaderboard_embed(interaction.guild, 'voice')
-    await interaction.response.send_message(embed=embed)
+    try:
+        embed = create_leaderboard_embed(interaction.guild, 'voice')
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Ошибка в команде топ_войс: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
 
-# Команда: общий топ
 @bot.tree.command(name="топ", description="Топ-10 игроков общий рейтинг")
 async def top_total_command(interaction: discord.Interaction):
-    embed = create_leaderboard_embed(interaction.guild, 'total')
-    await interaction.response.send_message(embed=embed)
+    try:
+        embed = create_leaderboard_embed(interaction.guild, 'total')
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Ошибка в команде топ: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
 
-# Команда: установить канал уведомлений
+@bot.tree.command(name="статистика", description="Показать подробную статистику пользователя")
+@app_commands.describe(пользователь="Выберите пользователя")
+async def stats_command(interaction: discord.Interaction, пользователь: discord.Member = None):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
+        return
+    
+    try:
+        target = пользователь or interaction.user
+        embed = create_user_stats_embed(target)
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Ошибка в команде статистика: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
+
+@bot.tree.command(name="бан", description="Забанить пользователя")
+@app_commands.describe(
+    пользователь="Пользователь для бана",
+    причина="Причина бана",
+    удалить_сообщения="Удалить сообщения за последние дни"
+)
+@app_commands.choices(удалить_сообщения=[
+    app_commands.Choice(name="Не удалять", value="0"),
+    app_commands.Choice(name="1 день", value="1"),
+    app_commands.Choice(name="7 дней", value="7"),
+])
+async def ban_command(
+    interaction: discord.Interaction,
+    пользователь: discord.Member,
+    причина: str = "Не указана",
+    удалить_сообщения: app_commands.Choice[str] = None
+):
+    if not interaction.user.guild_permissions.ban_members:
+        await interaction.response.send_message("❌ У вас нет прав для бана!", ephemeral=True)
+        return
+    
+    if пользователь == interaction.user:
+        await interaction.response.send_message("❌ Вы не можете забанить себя!", ephemeral=True)
+        return
+    
+    if пользователь == bot.user:
+        await interaction.response.send_message("❌ Я не могу забанить себя!", ephemeral=True)
+        return
+    
+    try:
+        delete_days = int(удалить_сообщения.value) if удалить_сообщения else 0
+        
+        await пользователь.ban(reason=причина, delete_message_days=delete_days)
+        
+        embed = discord.Embed(
+            title="🔨 Пользователь забанен",
+            color=COLORS['BAN'],
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="👤 Пользователь", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
+        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📋 Причина", value=причина, inline=False)
+        if delete_days > 0:
+            embed.add_field(name="🗑️ Удалено сообщений", value=f"За последние {delete_days} дней", inline=True)
+        
+        await interaction.response.send_message(embed=embed)
+        
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка при бане: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="кик", description="Кикнуть пользователя")
+@app_commands.describe(
+    пользователь="Пользователь для кика",
+    причина="Причина кика"
+)
+async def kick_command(
+    interaction: discord.Interaction,
+    пользователь: discord.Member,
+    причина: str = "Не указана"
+):
+    if not interaction.user.guild_permissions.kick_members:
+        await interaction.response.send_message("❌ У вас нет прав для кика!", ephemeral=True)
+        return
+    
+    if пользователь == interaction.user:
+        await interaction.response.send_message("❌ Вы не можете кикнуть себя!", ephemeral=True)
+        return
+    
+    if пользователь == bot.user:
+        await interaction.response.send_message("❌ Я не могу кикнуть себя!", ephemeral=True)
+        return
+    
+    try:
+        await пользователь.kick(reason=причина)
+        
+        embed = discord.Embed(
+            title="👢 Пользователь кикнут",
+            color=COLORS['KICK'],
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="👤 Пользователь", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
+        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📋 Причина", value=причина, inline=False)
+        
+        await interaction.response.send_message(embed=embed)
+        
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка при кике: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="таймаут", description="Выдать таймаут пользователю")
+@app_commands.describe(
+    пользователь="Пользователь для таймаута",
+    длительность="Длительность таймаута в минутах",
+    причина="Причина таймаута"
+)
+async def timeout_command(
+    interaction: discord.Interaction,
+    пользователь: discord.Member,
+    длительность: int,
+    причина: str = "Не указана"
+):
+    if not interaction.user.guild_permissions.moderate_members:
+        await interaction.response.send_message("❌ У вас нет прав для выдачи таймаута!", ephemeral=True)
+        return
+    
+    if пользователь == interaction.user:
+        await interaction.response.send_message("❌ Вы не можете выдать таймаут себе!", ephemeral=True)
+        return
+    
+    if пользователь == bot.user:
+        await interaction.response.send_message("❌ Я не могу выдать таймаут себе!", ephemeral=True)
+        return
+    
+    try:
+        duration = timedelta(minutes=длительность)
+        await пользователь.timeout(duration, reason=причина)
+        
+        embed = discord.Embed(
+            title="⏰ Пользователь в таймауте",
+            color=COLORS['WARNING'],
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="👤 Пользователь", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
+        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="⏱️ Длительность", value=f"{длительность} минут", inline=True)
+        embed.add_field(name="📋 Причина", value=причина, inline=False)
+        
+        await interaction.response.send_message(embed=embed)
+        
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка при выдаче таймаута: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="размут", description="Снять таймаут с пользователя")
+@app_commands.describe(
+    пользователь="Пользователь для размута",
+    причина="Причина размута"
+)
+async def unmute_command(
+    interaction: discord.Interaction,
+    пользователь: discord.Member,
+    причина: str = "Не указана"
+):
+    if not interaction.user.guild_permissions.moderate_members:
+        await interaction.response.send_message("❌ У вас нет прав для снятия таймаута!", ephemeral=True)
+        return
+    
+    try:
+        await пользователь.timeout(None, reason=причина)
+        
+        embed = discord.Embed(
+            title="🔊 Таймаут снят",
+            color=COLORS['SUCCESS'],
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="👤 Пользователь", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
+        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📋 Причина", value=причина, inline=False)
+        
+        await interaction.response.send_message(embed=embed)
+        
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка при снятии таймаута: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="очистить", description="Очистить сообщения в канале")
+@app_commands.describe(
+    количество="Количество сообщений для удаления (макс. 100)",
+    пользователь="Очистить сообщения только от этого пользователя"
+)
+async def clear_command(
+    interaction: discord.Interaction,
+    количество: int = 10,
+    пользователь: discord.Member = None
+):
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.response.send_message("❌ У вас нет прав для управления сообщениями!", ephemeral=True)
+        return
+    
+    if количество < 1 or количество > 100:
+        await interaction.response.send_message("❌ Количество должно быть от 1 до 100!", ephemeral=True)
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        def check(msg):
+            if пользователь:
+                return msg.author == пользователь and not msg.pinned
+            return not msg.pinned
+        
+        deleted = await interaction.channel.purge(limit=количество, check=check)
+        
+        embed = discord.Embed(
+            title="🧹 Очистка сообщений",
+            description=f"Удалено **{len(deleted)}** сообщений в {interaction.channel.mention}",
+            color=COLORS['SUCCESS'],
+            timestamp=datetime.now()
+        )
+        
+        if пользователь:
+            embed.add_field(name="👤 Фильтр", value=f"Только от {пользователь.mention}", inline=True)
+        
+        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+        await asyncio.sleep(5)
+        await interaction.delete_original_response()
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ошибка при очистке: {str(e)}", ephemeral=True)
+
 @bot.tree.command(name="установить_канал", description="Установить канал для уведомлений о повышении уровня (только для админов)")
 @app_commands.describe(канал="Выберите текстовый канал")
 async def set_channel_command(interaction: discord.Interaction, канал: discord.TextChannel):
@@ -662,7 +1668,6 @@ async def set_channel_command(interaction: discord.Interaction, канал: disc
     )
     await interaction.response.send_message(embed=embed)
 
-# Команда: установить канал логов
 @bot.tree.command(name="установить_логи", description="Установить канал для логирования действий (только для админов)")
 @app_commands.describe(канал="Выберите текстовый канал для логов")
 async def set_logs_command(interaction: discord.Interaction, канал: discord.TextChannel):
@@ -683,7 +1688,6 @@ async def set_logs_command(interaction: discord.Interaction, канал: discord
     )
     await interaction.response.send_message(embed=embed)
 
-# Команда: выдать уровень (только админы)
 @bot.tree.command(name="дать_уровень", description="Выдать уровень пользователю (только для админов)")
 @app_commands.describe(
     пользователь="Выберите пользователя",
@@ -718,134 +1722,6 @@ async def give_level_command(
     )
     await interaction.response.send_message(embed=embed)
 
-# Команда: убрать уровень (только админы)
-@bot.tree.command(name="убрать_уровень", description="Убрать уровень у пользователя (только для админов)")
-@app_commands.describe(
-    пользователь="Выберите пользователя",
-    тип="Тип опыта",
-    количество="Количество опыта"
-)
-@app_commands.choices(тип=[
-    app_commands.Choice(name="Текстовый", value="text"),
-    app_commands.Choice(name="Голосовой", value="voice"),
-])
-async def remove_level_command(
-    interaction: discord.Interaction,
-    пользователь: discord.Member,
-    тип: app_commands.Choice[str],
-    количество: int
-):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
-        return
-    
-    if количество < 1:
-        await interaction.response.send_message("❌ Количество должно быть положительным!", ephemeral=True)
-        return
-    
-    await add_xp(пользователь.id, -количество, тип.value, interaction.guild)
-    
-    type_name = "текстовый" if тип.value == "text" else "голосовой"
-    
-    embed = discord.Embed(
-        description=f"✅ Убрано **{количество}** XP ({type_name}) у пользователя {пользователь.mention}",
-        color=discord.Color.red()
-    )
-    await interaction.response.send_message(embed=embed)
-
-# Команда: сбросить уровень (только админы)
-@bot.tree.command(name="сбросить_уровень", description="Полностью сбросить уровни пользователя (только для админов)")
-@app_commands.describe(
-    пользователь="Выберите пользователя",
-    тип="Что сбросить"
-)
-@app_commands.choices(тип=[
-    app_commands.Choice(name="Всё", value="all"),
-    app_commands.Choice(name="Только текстовый", value="text"),
-    app_commands.Choice(name="Только голосовой", value="voice"),
-])
-async def reset_level_command(
-    interaction: discord.Interaction,
-    пользователь: discord.Member,
-    тип: app_commands.Choice[str]
-):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
-        return
-    
-    user_id = str(пользователь.id)
-    user = get_user_data(user_id)
-    
-    if тип.value == "all":
-        user['text_xp'] = 0
-        user['text_level'] = 1
-        user['voice_xp'] = 0
-        user['voice_level'] = 1
-        user['total_xp'] = 0
-        user['total_level'] = 1
-        reset_text = "все"
-    elif тип.value == "text":
-        user['text_xp'] = 0
-        user['text_level'] = 1
-        user['total_xp'] = user['voice_xp']
-        user['total_level'] = calculate_level(user['total_xp'])
-        reset_text = "текстовый"
-    elif тип.value == "voice":
-        user['voice_xp'] = 0
-        user['voice_level'] = 1
-        user['total_xp'] = user['text_xp']
-        user['total_level'] = calculate_level(user['total_xp'])
-        reset_text = "голосовой"
-    
-    save_data()
-    
-    embed = discord.Embed(
-        description=f"✅ Уровни пользователя {пользователь.mention} были сброшены ({reset_text})",
-        color=discord.Color.red()
-    )
-    await interaction.response.send_message(embed=embed)
-
-# Команда: очистить сообщения бота (только админы)
-@bot.tree.command(name="очистить_бота", description="Очистить сообщения бота в канале (только для админов)")
-@app_commands.describe(
-    количество="Количество сообщений для очистки (макс. 100)",
-    канал="Канал для очистки (по умолчанию текущий)"
-)
-async def clear_bot_command(
-    interaction: discord.Interaction,
-    количество: int = 50,
-    канал: discord.TextChannel = None
-):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
-        return
-    
-    if количество < 1 or количество > 100:
-        await interaction.response.send_message("❌ Количество должно быть от 1 до 100!", ephemeral=True)
-        return
-    
-    channel = канал or interaction.channel
-    
-    await interaction.response.send_message(f"🧹 Очищаю последние {количество} сообщений бота...", ephemeral=True)
-    
-    try:
-        def is_bot_message(msg):
-            return msg.author == bot.user
-        
-        deleted = await channel.purge(limit=количество, check=is_bot_message, before=interaction.created_at)
-        
-        report = await interaction.followup.send(
-            f"✅ Удалено {len(deleted)} сообщений бота в {channel.mention}",
-            ephemeral=True
-        )
-        
-        await asyncio.sleep(5)
-        await report.delete()
-        
-    except Exception as e:
-        await interaction.followup.send(f"❌ Ошибка при очистке: {str(e)}", ephemeral=True)
-
-# Команда: информация о логах
 @bot.tree.command(name="логи_инфо", description="Показать информацию о настройках логов")
 async def logs_info_command(interaction: discord.Interaction):
     guild_id = str(interaction.guild.id)
@@ -871,20 +1747,70 @@ async def logs_info_command(interaction: discord.Interaction):
         inline=True
     )
     
-    embed.add_field(
-        name="📋 Логируемые события",
-        value="• Сообщения (удаление/изменение)\n• Участники (вход/выход/бан)\n• Роли и права\n• Каналы\n• Голосовые каналы",
-        inline=False
-    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="тревога", description="Управление системой оповещений (только для владельца сервера и создателя бота)")
+@app_commands.describe(действие="Включить или выключить систему тревог")
+@app_commands.choices(действие=[
+    app_commands.Choice(name="Включить", value="enable"),
+    app_commands.Choice(name="Выключить", value="disable"),
+    app_commands.Choice(name="Статус", value="status"),
+])
+async def alert_command(interaction: discord.Interaction, действие: app_commands.Choice[str]):
+    # ID создателя бота - замените на ваш реальный ID
+    BOT_OWNER_ID = 852962557002252289  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ID
     
-    if not log_channel:
+    # Проверяем права: владелец сервера ИЛИ создатель бота
+    if interaction.user.id != interaction.guild.owner_id and interaction.user.id != BOT_OWNER_ID:
+        await interaction.response.send_message("❌ Эта команда доступна только владельцу сервера или создателю бота!", ephemeral=True)
+        return
+    
+    if действие.value == "enable":
+        CONFIG['ADMIN_ALERT_ENABLED'] = True
+        embed = discord.Embed(
+            title="✅ Система тревог включена",
+            description="Теперь вы будете получать уведомления о подозрительных действиях администраторов.",
+            color=discord.Color.green()
+        )
+    elif действие.value == "disable":
+        CONFIG['ADMIN_ALERT_ENABLED'] = False
+        embed = discord.Embed(
+            title="✅ Система тревог выключена",
+            description="Уведомления о подозрительных действиях администраторов отключены.",
+            color=discord.Color.orange()
+        )
+    else:
+        status = "ВКЛЮЧЕНА" if CONFIG['ADMIN_ALERT_ENABLED'] else "ВЫКЛЮЧЕНА"
+        color = discord.Color.green() if CONFIG['ADMIN_ALERT_ENABLED'] else discord.Color.orange()
+        
+        embed = discord.Embed(
+            title="📊 Статус системы тревог",
+            description=f"Система мониторинга действий администраторов: **{status}**",
+            color=color
+        )
+        
         embed.add_field(
-            name="💡 Совет",
-            value="Используйте `/установить_логи` чтобы настроить канал для логов",
+            name="🔔 Отслеживаемые события",
+            value="• Удаление логов бота\n• Массовое удаление логов\n• Попытки скрыть действия",
             inline=False
         )
     
-    await interaction.response.send_message(embed=embed)
+    # Добавляем информацию о том, кто изменил настройки
+    if interaction.user.id == BOT_OWNER_ID:
+        embed.add_field(
+            name="👑 Изменил",
+            value="Создатель бота",
+            inline=True
+        )
+    else:
+        embed.add_field(
+            name="👑 Изменил",
+            value="Владелец сервера",
+            inline=True
+        )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 # Запуск бота
 if __name__ == "__main__":
