@@ -179,6 +179,9 @@ async def send_level_up_notification(user_id, xp_type, old_level, new_level, gui
         # Если канал уведомлений не установлен, отправляем в системный канал
         if guild.system_channel:
             await guild.system_channel.send(embed=embed)
+            
+    except Exception as e:
+        print(f"Ошибка отправки уведомления о уровне: {e}")
 
 # Улучшенная функция получения информации из аудит-логов
 async def get_audit_log_info(guild, action, target=None):
@@ -191,6 +194,9 @@ async def get_audit_log_info(guild, action, target=None):
                 return entry.user, entry.reason or "Не указана"
             elif hasattr(entry, 'target') and entry.target and entry.target.id == target.id:
                 return entry.user, entry.reason or "Не указана"
+    except Exception as e:
+        print(f"Ошибка при получении аудит-лога: {e}")
+    
     return None, "Не указана"
 
 # Альтернативная функция для поиска модератора в определенных случаях
@@ -204,13 +210,15 @@ async def find_moderator_for_role_change(guild, target_user, role=None, is_add=T
                 time_diff = (datetime.now().astimezone() - entry.created_at).total_seconds()
                 if time_diff < 10:  # 10 секунд - разумный порог
                     return entry.user, entry.reason or "Не указана"
+    except Exception as e:
+        print(f"Ошибка при поиске модератора для изменения ролей: {e}")
     
     return None, "Не указана"
 
 async def send_admin_alert(guild, action, moderator, details):
     try:
         # ID создателя бота - замените на ваш реальный ID
-        BOT_OWNER_ID = 852962557002252289  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ID
+        BOT_OWNER_ID = 123456789012345678  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ID
         
         # Получаем владельца сервера
         owner = guild.owner
@@ -268,6 +276,9 @@ async def send_admin_alert(guild, action, moderator, details):
                 print(f"✅ Тревога отправлена создателю бота: {bot_owner.name}")
             except discord.Forbidden:
                 print(f"❌ Не удалось отправить тревогу создателю бота: нет прав для ЛС")
+        
+    except Exception as e:
+        print(f"❌ Ошибка отправки тревоги: {e}")
 
 # Логирование действий с защитой от rate limits
 async def log_action(guild, action, description, color=COLORS['INFO'], target=None, moderator=None, reason=None, extra_fields=None):
@@ -345,6 +356,8 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
                 await log_action(guild, action, description, color, target, moderator, reason, extra_fields)
             else:
                 print(f"Ошибка логирования: {e}")
+    except Exception as e:
+            print(f"Ошибка логирования: {e}")
 
 # Создание современной карточки уровня
 def create_level_embed(user, member):
