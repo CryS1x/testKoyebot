@@ -218,7 +218,7 @@ async def find_moderator_for_role_change(guild, target_user, role=None, is_add=T
 async def send_admin_alert(guild, action, moderator, details):
     try:
         # ID создателя бота - замените на ваш реальный ID
-        BOT_OWNER_ID = 123456789012345678  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ID
+        BOT_OWNER_ID = 852962557002252289  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ID
         
         # Получаем владельца сервера
         owner = guild.owner
