@@ -32,6 +32,21 @@ intents.message_content = True
 intents.members = True
 intents.voice_states = True
 intents.guilds = True
+intents.moderation = True
+intents.integrations = True
+intents.webhooks = True
+intents.invites = True
+intents.voice_states = True
+intents.presences = True
+intents.message_content = True
+intents.reactions = True
+intents.guild_messages = True
+intents.guild_reactions = True
+intents.guild_typing = True
+intents.dm_messages = True
+intents.dm_reactions = True
+intents.dm_typing = True
+intents.guild_scheduled_events = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
@@ -43,6 +58,15 @@ voice_tracking = {}
 DATA_FILE = 'userdata.json'
 SETTINGS_FILE = 'settings.json'
 
+# Цвета для эмбедов
+COLORS = {
+    'INFO': discord.Color.blue(),
+    'SUCCESS': discord.Color.green(),
+    'WARNING': discord.Color.orange(),
+    'ERROR': discord.Color.red(),
+    'MODERATION': discord.Color.purple(),
+    'LEVEL_UP': discord.Color.gold()
+}
 
 # Загрузка данных
 def load_data():
@@ -61,18 +85,15 @@ def load_data():
         except:
             server_settings = {}
 
-
 # Сохранение данных
 def save_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(user_data, f, indent=2, ensure_ascii=False)
 
-
 # Сохранение настроек
 def save_settings():
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(server_settings, f, indent=2, ensure_ascii=False)
-
 
 # Получение данных пользователя
 def get_user_data(user_id):
@@ -88,7 +109,6 @@ def get_user_data(user_id):
         }
     return user_data[user_id]
 
-
 # Получение канала уведомлений
 def get_notification_channel(guild_id):
     guild_id = str(guild_id)
@@ -96,16 +116,23 @@ def get_notification_channel(guild_id):
         return server_settings[guild_id].get('notification_channel')
     return None
 
+# Получение канала логов
+def get_log_channel(guild_id):
+    guild_id = str(guild_id)
+    if guild_id in server_settings:
+        return server_settings[guild_id].get('log_channel')
+    return None
 
 # Расчет уровня по опыту
 def calculate_level(xp):
     return min(xp // CONFIG['XP_PER_LEVEL'] + 1, CONFIG['MAX_LEVEL'])
 
-
 # Добавление опыта
-def add_xp(user_id, xp, xp_type):
+async def add_xp(user_id, xp, xp_type, guild=None):
     user_id = str(user_id)
     user = get_user_data(user_id)
+    
+    old_level = user[f'{xp_type}_level']
     
     if xp_type == 'text':
         user['text_xp'] = max(0, user['text_xp'] + xp)
@@ -118,8 +145,88 @@ def add_xp(user_id, xp, xp_type):
     user['total_level'] = calculate_level(user['total_xp'])
     
     save_data()
+    
+    # Проверка повышения уровня
+    new_level = user[f'{xp_type}_level']
+    if new_level > old_level and guild:
+        await send_level_up_notification(user_id, xp_type, old_level, new_level, guild)
+    
     return user
 
+# Отправка уведомления о повышении уровня
+async def send_level_up_notification(user_id, xp_type, old_level, new_level, guild):
+    try:
+        member = guild.get_member(int(user_id))
+        if not member:
+            return
+        
+        type_name = "текстовом" if xp_type == "text" else "голосовом"
+        type_emoji = "💬" if xp_type == "text" else "🎤"
+        
+        embed = discord.Embed(
+            title="🎉 Повышение уровня!",
+            description=f"{member.mention} достиг **{new_level}** уровня в {type_name} чате!",
+            color=COLORS['LEVEL_UP'],
+            timestamp=datetime.now()
+        )
+        
+        embed.add_field(
+            name=f"{type_emoji} Уровень повышен",
+            value=f"**Был:** `{old_level}`\n**Стал:** `{new_level}`",
+            inline=True
+        )
+        
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text="Поздравляем! 🎊")
+        
+        # Отправка в канал уведомлений
+        notification_channel_id = get_notification_channel(guild.id)
+        if notification_channel_id:
+            channel = bot.get_channel(int(notification_channel_id))
+            if channel:
+                await channel.send(embed=embed)
+                return
+        
+        # Если канал уведомлений не установлен, отправляем в системный канал
+        if guild.system_channel:
+            await guild.system_channel.send(embed=embed)
+            
+    except Exception as e:
+        print(f"Ошибка отправки уведомления о уровне: {e}")
+
+# Логирование действий
+async def log_action(guild, action, description, color=COLORS['INFO'], target=None, moderator=None, reason=None):
+    try:
+        log_channel_id = get_log_channel(guild.id)
+        if not log_channel_id:
+            return
+        
+        channel = bot.get_channel(int(log_channel_id))
+        if not channel:
+            return
+        
+        embed = discord.Embed(
+            title=f"📝 {action}",
+            description=description,
+            color=color,
+            timestamp=datetime.now()
+        )
+        
+        if target:
+            embed.add_field(name="👤 Участник", value=f"{target.mention} (`{target.id}`)", inline=True)
+        
+        if moderator:
+            embed.add_field(name="🛡️ Модератор", value=f"{moderator.mention} (`{moderator.id}`)", inline=True)
+        
+        if reason:
+            embed.add_field(name="📋 Причина", value=reason, inline=False)
+        
+        embed.set_footer(text=f"ID: {target.id if target else 'Система'}")
+        
+        await channel.send(embed=embed)
+        
+    except Exception as e:
+        print(f"Ошибка логирования: {e}")
 
 # Получение прогресс-бара
 def get_progress_bar(current_xp, level, length=20):
@@ -137,7 +244,6 @@ def get_progress_bar(current_xp, level, length=20):
     percentage = int((xp_in_level / xp_needed) * 100) if level < CONFIG['MAX_LEVEL'] else 100
     
     return bar, percentage, xp_in_level, xp_needed
-
 
 # Создание улучшенной карточки уровня
 def create_level_embed(user, member):
@@ -164,55 +270,61 @@ def create_level_embed(user, member):
     )
     
     embed.set_author(
-        name=f"Профиль {member.display_name}",
+        name=f"📊 Профиль {member.display_name}",
         icon_url=user.display_avatar.url
     )
     
     embed.set_thumbnail(url=user.display_avatar.url)
     
+    # Общая информация
+    embed.add_field(
+        name="👤 Общая информация",
+        value=f"**Уровень:** `{data['total_level']}`\n"
+              f"**Опыт:** `{data['total_xp']:,}` XP\n"
+              f"**Прогресс:** {total_bar}\n"
+              f"**{total_pct}%** ({total_current}/{total_needed} XP)",
+        inline=False
+    )
+    
     # Текстовый чат
     text_status = "🏆 МАКСИМУМ" if data['text_level'] >= CONFIG['MAX_LEVEL'] else f"{text_current}/{text_needed} XP"
     embed.add_field(
-        name="",
-        value=f"```md\n# 💬 Текстовый Чат\n```"
-              f"**Уровень:** `{data['text_level']}`\n"
+        name="💬 Текстовый чат",
+        value=f"**Уровень:** `{data['text_level']}`\n"
               f"**Опыт:** `{data['text_xp']:,}` XP\n"
-              f"{text_bar} `{text_pct}%`\n"
-              f"{text_status}",
-        inline=False
+              f"**Прогресс:** {text_bar}\n"
+              f"**{text_pct}%** ({text_status})",
+        inline=True
     )
     
     # Голосовой чат
     voice_status = "🏆 МАКСИМУМ" if data['voice_level'] >= CONFIG['MAX_LEVEL'] else f"{voice_current}/{voice_needed} XP"
     embed.add_field(
-        name="",
-        value=f"```md\n# 🎤 Голосовой Чат\n```"
-              f"**Уровень:** `{data['voice_level']}`\n"
+        name="🎤 Голосовой чат",
+        value=f"**Уровень:** `{data['voice_level']}`\n"
               f"**Опыт:** `{data['voice_xp']:,}` XP\n"
-              f"{voice_bar} `{voice_pct}%`\n"
-              f"{voice_status}",
-        inline=False
+              f"**Прогресс:** {voice_bar}\n"
+              f"**{voice_pct}%** ({voice_status})",
+        inline=True
     )
     
-    # Общий уровень
-    total_status = "🏆 МАКСИМУМ" if data['total_level'] >= CONFIG['MAX_LEVEL'] else f"{total_current}/{total_needed} XP"
-    embed.add_field(
-        name="",
-        value=f"```md\n# ⭐ Общий Уровень\n```"
-              f"**Уровень:** `{data['total_level']}`\n"
-              f"**Всего опыта:** `{data['total_xp']:,}` XP\n"
-              f"{total_bar} `{total_pct}%`\n"
-              f"{total_status}",
-        inline=False
-    )
+    # Достижения
+    next_milestone = ((data['total_level'] // 100) + 1) * 100
+    if next_milestone <= CONFIG['MAX_LEVEL']:
+        xp_needed_total = next_milestone * CONFIG['XP_PER_LEVEL'] - data['total_xp']
+        embed.add_field(
+            name="🎯 Следующая цель",
+            value=f"**Уровень {next_milestone}**\n"
+                  f"Осталось: `{xp_needed_total:,}` XP",
+            inline=False
+        )
     
     embed.set_footer(
-        text=f"by crysix",
+        text=f"by crysix | Обновлено",
         icon_url=bot.user.display_avatar.url
     )
     
     return embed
-
 
 # Создание топа
 def create_leaderboard_embed(guild, top_type='total'):
@@ -252,7 +364,8 @@ def create_leaderboard_embed(guild, top_type='total'):
             xp = data[f'{field}_xp']
             
             description += f"{medal} **{member.display_name}**\n"
-            description += f"　└ Уровень: `{level}` • Опыт: `{xp:,}` XP\n\n"
+            description += f"　├ Уровень: `{level}`\n"
+            description += f"　└ Опыт: `{xp:,}` XP\n\n"
         except:
             continue
     
@@ -267,7 +380,6 @@ def create_leaderboard_embed(guild, top_type='total'):
     
     return embed
 
-
 # Событие: бот готов
 @bot.event
 async def on_ready():
@@ -281,7 +393,6 @@ async def on_ready():
         print(f'Ошибка синхронизации команд: {e}')
     
     voice_xp_task.start()
-
 
 # Обработка сообщений для текстового опыта
 @bot.event
@@ -298,35 +409,12 @@ async def on_message(message):
             return
     
     # Добавление опыта
-    old_data = get_user_data(user_id).copy()
     xp = random.randint(CONFIG['TEXT_XP_MIN'], CONFIG['TEXT_XP_MAX'])
-    new_data = add_xp(user_id, xp, 'text')
+    await add_xp(user_id, xp, 'text', message.guild)
     
     cooldowns[user_id] = current_time
     
-    # Уведомление о повышении уровня
-    if new_data['text_level'] > old_data['text_level']:
-        embed = discord.Embed(
-            title="🎉 Повышение уровня!",
-            description=f"{message.author.mention} достиг **{new_data['text_level']}** уровня в текстовом чате!",
-            color=discord.Color.green(),
-            timestamp=datetime.now()
-        )
-        embed.set_thumbnail(url=message.author.display_avatar.url)
-        
-        # Отправка в канал уведомлений
-        notification_channel_id = get_notification_channel(message.guild.id)
-        if notification_channel_id:
-            channel = bot.get_channel(int(notification_channel_id))
-            if channel:
-                await channel.send(embed=embed)
-            else:
-                await message.channel.send(embed=embed)
-        else:
-            await message.channel.send(embed=embed)
-    
     await bot.process_commands(message)
-
 
 # Отслеживание голосовых каналов
 @bot.event
@@ -348,43 +436,184 @@ async def on_voice_state_update(member, before, after):
             minutes = int(duration / 60)
             
             if minutes > 0:
-                old_data = get_user_data(user_id).copy()
                 xp = minutes * CONFIG['VOICE_XP_PER_MINUTE']
-                new_data = add_xp(user_id, xp, 'voice')
-                
-                # Уведомление о повышении уровня
-                if new_data['voice_level'] > old_data['voice_level']:
-                    embed = discord.Embed(
-                        title="🎉 Повышение уровня!",
-                        description=f"{member.mention} достиг **{new_data['voice_level']}** уровня в голосовом чате!",
-                        color=discord.Color.green(),
-                        timestamp=datetime.now()
-                    )
-                    embed.set_thumbnail(url=member.display_avatar.url)
-                    
-                    # Отправка в канал уведомлений
-                    notification_channel_id = get_notification_channel(member.guild.id)
-                    if notification_channel_id:
-                        channel = bot.get_channel(int(notification_channel_id))
-                        if channel:
-                            await channel.send(embed=embed)
+                await add_xp(user_id, xp, 'voice', member.guild)
             
             del voice_tracking[user_id]
-
 
 # Периодическое начисление опыта в голосовых каналах
 @tasks.loop(minutes=1)
 async def voice_xp_task():
     for user_id in list(voice_tracking.keys()):
+        guild_id = user_id  # Здесь нужно определить guild_id из voice_tracking
+        # Для простоты начисляем без уведомлений в этой задаче
         add_xp(user_id, CONFIG['VOICE_XP_PER_MINUTE'], 'voice')
 
+# События для логирования
+@bot.event
+async def on_member_join(member):
+    await log_action(
+        member.guild,
+        "Участник присоединился",
+        f"Новый участник присоединился к серверу",
+        COLORS['SUCCESS'],
+        member
+    )
+
+@bot.event
+async def on_member_remove(member):
+    await log_action(
+        member.guild,
+        "Участник покинул",
+        f"Участник покинул сервер",
+        COLORS['WARNING'],
+        member
+    )
+
+@bot.event
+async def on_member_ban(guild, user):
+    await log_action(
+        guild,
+        "Участник забанен",
+        f"Участник был забанен на сервере",
+        COLORS['ERROR'],
+        user
+    )
+
+@bot.event
+async def on_member_unban(guild, user):
+    await log_action(
+        guild,
+        "Участник разбанен",
+        f"С участника снят бан",
+        COLORS['SUCCESS'],
+        user
+    )
+
+@bot.event
+async def on_member_update(before, after):
+    # Изменение ролей
+    if before.roles != after.roles:
+        added_roles = [role for role in after.roles if role not in before.roles]
+        removed_roles = [role for role in before.roles if role not in after.roles]
+        
+        if added_roles:
+            for role in added_roles:
+                await log_action(
+                    after.guild,
+                    "Роль выдана",
+                    f"Участнику выдана роль {role.mention}",
+                    COLORS['MODERATION'],
+                    after
+                )
+        
+        if removed_roles:
+            for role in removed_roles:
+                await log_action(
+                    after.guild,
+                    "Роль изъята",
+                    f"С участника снята роль {role.mention}",
+                    COLORS['MODERATION'],
+                    after
+                )
+    
+    # Изменение ника
+    if before.nick != after.nick:
+        await log_action(
+            after.guild,
+            "Изменен никнейм",
+            f"**Был:** `{before.nick or before.display_name}`\n**Стал:** `{after.nick or after.display_name}`",
+            COLORS['INFO'],
+            after
+        )
+
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot or not message.guild:
+        return
+    
+    await log_action(
+        message.guild,
+        "Сообщение удалено",
+        f"**Канал:** {message.channel.mention}\n**Содержимое:** {message.content[:1000]}",
+        COLORS['WARNING'],
+        message.author
+    )
+
+@bot.event
+async def on_message_edit(before, after):
+    if before.author.bot or not before.guild or before.content == after.content:
+        return
+    
+    await log_action(
+        before.guild,
+        "Сообщение изменено",
+        f"**Канал:** {before.channel.mention}\n**Было:** {before.content[:500]}\n**Стало:** {after.content[:500]}",
+        COLORS['INFO'],
+        before.author
+    )
+
+@bot.event
+async def on_guild_channel_create(channel):
+    await log_action(
+        channel.guild,
+        "Канал создан",
+        f"**Тип:** {'💬 Текстовый' if isinstance(channel, discord.TextChannel) else '🎤 Голосовой'}\n**Название:** {channel.mention}",
+        COLORS['SUCCESS']
+    )
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    await log_action(
+        channel.guild,
+        "Канал удален",
+        f"**Тип:** {'💬 Текстовый' if isinstance(channel, discord.TextChannel) else '🎤 Голосовой'}\n**Название:** `{channel.name}`",
+        COLORS['ERROR']
+    )
+
+@bot.event
+async def on_guild_role_create(role):
+    await log_action(
+        role.guild,
+        "Роль создана",
+        f"**Роль:** {role.mention}\n**Цвет:** `{role.color}`",
+        COLORS['SUCCESS']
+    )
+
+@bot.event
+async def on_guild_role_delete(role):
+    await log_action(
+        role.guild,
+        "Роль удалена",
+        f"**Роль:** `{role.name}`\n**Цвет:** `{role.color}`",
+        COLORS['ERROR']
+    )
+
+@bot.event
+async def on_guild_role_update(before, after):
+    if before.name != after.name:
+        await log_action(
+            after.guild,
+            "Роль переименована",
+            f"**Было:** `{before.name}`\n**Стало:** `{after.name}`",
+            COLORS['INFO'],
+            target=None
+        )
+    
+    if before.permissions != after.permissions:
+        await log_action(
+            after.guild,
+            "Изменены права роли",
+            f"**Роль:** {after.mention}",
+            COLORS['MODERATION'],
+            target=None
+        )
 
 # Команда: показать свой уровень
 @bot.tree.command(name="уровень", description="Показать вашу карточку с уровнем")
 async def level_command(interaction: discord.Interaction):
     embed = create_level_embed(interaction.user, interaction.user)
     await interaction.response.send_message(embed=embed)
-
 
 # Команда: посмотреть профиль
 @bot.tree.command(name="профиль", description="Посмотреть профиль пользователя")
@@ -394,13 +623,11 @@ async def profile_command(interaction: discord.Interaction, пользовате
     embed = create_level_embed(target, target)
     await interaction.response.send_message(embed=embed)
 
-
 # Команда: топ по текстовому
 @bot.tree.command(name="топ_текст", description="Топ-10 игроков по текстовому чату")
 async def top_text_command(interaction: discord.Interaction):
     embed = create_leaderboard_embed(interaction.guild, 'text')
     await interaction.response.send_message(embed=embed)
-
 
 # Команда: топ по голосовому
 @bot.tree.command(name="топ_войс", description="Топ-10 игроков по голосовому чату")
@@ -408,13 +635,11 @@ async def top_voice_command(interaction: discord.Interaction):
     embed = create_leaderboard_embed(interaction.guild, 'voice')
     await interaction.response.send_message(embed=embed)
 
-
 # Команда: общий топ
 @bot.tree.command(name="топ", description="Топ-10 игроков общий рейтинг")
 async def top_total_command(interaction: discord.Interaction):
     embed = create_leaderboard_embed(interaction.guild, 'total')
     await interaction.response.send_message(embed=embed)
-
 
 # Команда: установить канал уведомлений
 @bot.tree.command(name="установить_канал", description="Установить канал для уведомлений о повышении уровня (только для админов)")
@@ -437,6 +662,26 @@ async def set_channel_command(interaction: discord.Interaction, канал: disc
     )
     await interaction.response.send_message(embed=embed)
 
+# Команда: установить канал логов
+@bot.tree.command(name="установить_логи", description="Установить канал для логирования действий (только для админов)")
+@app_commands.describe(канал="Выберите текстовый канал для логов")
+async def set_logs_command(interaction: discord.Interaction, канал: discord.TextChannel):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
+        return
+    
+    guild_id = str(interaction.guild.id)
+    if guild_id not in server_settings:
+        server_settings[guild_id] = {}
+    
+    server_settings[guild_id]['log_channel'] = str(канал.id)
+    save_settings()
+    
+    embed = discord.Embed(
+        description=f"✅ Канал логов установлен: {канал.mention}",
+        color=discord.Color.green()
+    )
+    await interaction.response.send_message(embed=embed)
 
 # Команда: выдать уровень (только админы)
 @bot.tree.command(name="дать_уровень", description="Выдать уровень пользователю (только для админов)")
@@ -463,7 +708,7 @@ async def give_level_command(
         await interaction.response.send_message("❌ Количество должно быть положительным!", ephemeral=True)
         return
     
-    add_xp(пользователь.id, количество, тип.value)
+    await add_xp(пользователь.id, количество, тип.value, interaction.guild)
     
     type_name = "текстовый" if тип.value == "text" else "голосовой"
     
@@ -472,7 +717,6 @@ async def give_level_command(
         color=discord.Color.green()
     )
     await interaction.response.send_message(embed=embed)
-
 
 # Команда: убрать уровень (только админы)
 @bot.tree.command(name="убрать_уровень", description="Убрать уровень у пользователя (только для админов)")
@@ -499,7 +743,7 @@ async def remove_level_command(
         await interaction.response.send_message("❌ Количество должно быть положительным!", ephemeral=True)
         return
     
-    add_xp(пользователь.id, -количество, тип.value)
+    await add_xp(пользователь.id, -количество, тип.value, interaction.guild)
     
     type_name = "текстовый" if тип.value == "text" else "голосовой"
     
@@ -508,7 +752,6 @@ async def remove_level_command(
         color=discord.Color.red()
     )
     await interaction.response.send_message(embed=embed)
-
 
 # Команда: сбросить уровень (только админы)
 @bot.tree.command(name="сбросить_уровень", description="Полностью сбросить уровни пользователя (только для админов)")
@@ -562,7 +805,6 @@ async def reset_level_command(
     )
     await interaction.response.send_message(embed=embed)
 
-
 # Команда: очистить сообщения бота (только админы)
 @bot.tree.command(name="очистить_бота", description="Очистить сообщения бота в канале (только для админов)")
 @app_commands.describe(
@@ -584,203 +826,65 @@ async def clear_bot_command(
     
     channel = канал or interaction.channel
     
-    # Отправляем сообщение о начале очистки
     await interaction.response.send_message(f"🧹 Очищаю последние {количество} сообщений бота...", ephemeral=True)
     
     try:
-        # Получаем сообщения и фильтруем только от бота
         def is_bot_message(msg):
             return msg.author == bot.user
         
         deleted = await channel.purge(limit=количество, check=is_bot_message, before=interaction.created_at)
         
-        # Отправляем отчет
         report = await interaction.followup.send(
             f"✅ Удалено {len(deleted)} сообщений бота в {channel.mention}",
             ephemeral=True
         )
         
-        # Удаляем отчет через 5 секунд
         await asyncio.sleep(5)
         await report.delete()
         
     except Exception as e:
         await interaction.followup.send(f"❌ Ошибка при очистке: {str(e)}", ephemeral=True)
 
-
-# Команда: очистить все сообщения в канале (только админы)
-@bot.tree.command(name="очистить_канал", description="Очистить все сообщения в канале (только для админов)")
-@app_commands.describe(
-    количество="Количество сообщений для очистки (макс. 100)",
-    канал="Канал для очистки (по умолчанию текущий)",
-    удалить_пользовательские="Удалить также сообщения пользователей"
-)
-async def clear_channel_command(
-    interaction: discord.Interaction,
-    количество: int = 50,
-    канал: discord.TextChannel = None,
-    удалить_пользовательские: bool = False
-):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
-        return
+# Команда: информация о логах
+@bot.tree.command(name="логи_инфо", description="Показать информацию о настройках логов")
+async def logs_info_command(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id)
     
-    if количество < 1 or количество > 100:
-        await interaction.response.send_message("❌ Количество должно быть от 1 до 100!", ephemeral=True)
-        return
+    embed = discord.Embed(
+        title="📊 Информация о системе логов",
+        color=discord.Color.blue(),
+        timestamp=datetime.now()
+    )
     
-    channel = канал or interaction.channel
+    notification_channel = get_notification_channel(guild_id)
+    log_channel = get_log_channel(guild_id)
     
-    # Отправляем сообщение о начале очистки
-    await interaction.response.send_message(f"🧹 Очищаю последние {количество} сообщений в канале...", ephemeral=True)
+    embed.add_field(
+        name="🔔 Канал уведомлений",
+        value=f"<#{notification_channel}>" if notification_channel else "❌ Не установлен",
+        inline=True
+    )
     
-    try:
-        if удалить_пользовательские:
-            # Удаляем все сообщения
-            deleted = await channel.purge(limit=количество, before=interaction.created_at)
-            message_type = "всех сообщений"
-        else:
-            # Удаляем только сообщения бота
-            def is_bot_message(msg):
-                return msg.author == bot.user
-            
-            deleted = await channel.purge(limit=количество, check=is_bot_message, before=interaction.created_at)
-            message_type = "сообщений бота"
-        
-        # Отправляем отчет
-        report = await interaction.followup.send(
-            f"✅ Удалено {len(deleted)} {message_type} в {channel.mention}",
-            ephemeral=True
+    embed.add_field(
+        name="📝 Канал логов",
+        value=f"<#{log_channel}>" if log_channel else "❌ Не установлен",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="📋 Логируемые события",
+        value="• Сообщения (удаление/изменение)\n• Участники (вход/выход/бан)\n• Роли и права\n• Каналы\n• Голосовые каналы",
+        inline=False
+    )
+    
+    if not log_channel:
+        embed.add_field(
+            name="💡 Совет",
+            value="Используйте `/установить_логи` чтобы настроить канал для логов",
+            inline=False
         )
-        
-        # Удаляем отчет через 5 секунд
-        await asyncio.sleep(5)
-        await report.delete()
-        
-    except Exception as e:
-        await interaction.followup.send(f"❌ Ошибка при очистке: {str(e)}", ephemeral=True)
-
-
-# Команда: очистить команды пользователей (только админы)
-@bot.tree.command(name="очистить_команды", description="Очистить слеши-команды пользователей (только для админов)")
-@app_commands.describe(
-    количество="Количество сообщений для очистки (макс. 100)",
-    канал="Канал для очистки (по умолчанию текущий)"
-)
-async def clear_commands_command(
-    interaction: discord.Interaction,
-    количество: int = 50,
-    канал: discord.TextChannel = None
-):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
-        return
     
-    if количество < 1 or количество > 100:
-        await interaction.response.send_message("❌ Количество должно быть от 1 до 100!", ephemeral=True)
-        return
-    
-    channel = канал or interaction.channel
-    
-    # Отправляем сообщение о начале очистки
-    await interaction.response.send_message(f"🧹 Очищаю последние {количество} команд пользователей...", ephemeral=True)
-    
-    try:
-        # Фильтруем только слеши-команды пользователей
-        def is_user_command(msg):
-            return (not msg.author.bot and 
-                   msg.content and 
-                   (msg.content.startswith('/') or 'application.command' in str(msg.type)))
-        
-        deleted = await channel.purge(limit=количество, check=is_user_command, before=interaction.created_at)
-        
-        # Отправляем отчет
-        report = await interaction.followup.send(
-            f"✅ Удалено {len(deleted)} команд пользователей в {channel.mention}",
-            ephemeral=True
-        )
-        
-        # Удаляем отчет через 5 секунд
-        await asyncio.sleep(5)
-        await report.delete()
-        
-    except Exception as e:
-        await interaction.followup.send(f"❌ Ошибка при очистке: {str(e)}", ephemeral=True)
-
-
-# Команда: массовая очистка (только админы)
-@bot.tree.command(name="массовая_очистка", description="Массовая очистка разных типов сообщений (только для админов)")
-@app_commands.describe(
-    тип_очистки="Что очищать",
-    количество="Количество сообщений (макс. 100)",
-    канал="Канал для очистки"
-)
-@app_commands.choices(тип_очистки=[
-    app_commands.Choice(name="Все сообщения бота", value="bot_all"),
-    app_commands.Choice(name="Только команды бота", value="bot_commands"),
-    app_commands.Choice(name="Сообщения пользователей", value="user_messages"),
-    app_commands.Choice(name="Команды пользователей", value="user_commands"),
-    app_commands.Choice(name="Всё подряд", value="everything"),
-])
-async def mass_clear_command(
-    interaction: discord.Interaction,
-    тип_очистки: app_commands.Choice[str],
-    количество: int = 50,
-    канал: discord.TextChannel = None
-):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
-        return
-    
-    if количество < 1 or количество > 100:
-        await interaction.response.send_message("❌ Количество должно быть от 1 до 100!", ephemeral=True)
-        return
-    
-    channel = канал or interaction.channel
-    
-    # Определяем функцию проверки в зависимости от типа очистки
-    if тип_очистки.value == "bot_all":
-        def check(msg):
-            return msg.author == bot.user
-        type_name = "всех сообщений бота"
-    elif тип_очистки.value == "bot_commands":
-        def check(msg):
-            return (msg.author == bot.user and 
-                   (msg.embeds or "Уровень" in msg.content or "Топ" in msg.content))
-        type_name = "команд бота"
-    elif тип_очистки.value == "user_messages":
-        def check(msg):
-            return not msg.author.bot
-        type_name = "сообщений пользователей"
-    elif тип_очистки.value == "user_commands":
-        def check(msg):
-            return (not msg.author.bot and 
-                   (msg.content.startswith('/') or 'application.command' in str(msg.type)))
-        type_name = "команд пользователей"
-    else:  # everything
-        def check(msg):
-            return True
-        type_name = "всех сообщений"
-    
-    # Отправляем сообщение о начале очистки
-    await interaction.response.send_message(f"🧹 Очищаю {количество} {type_name}...", ephemeral=True)
-    
-    try:
-        deleted = await channel.purge(limit=количество, check=check, before=interaction.created_at)
-        
-        # Отправляем отчет
-        report = await interaction.followup.send(
-            f"✅ Удалено {len(deleted)} {type_name} в {channel.mention}",
-            ephemeral=True
-        )
-        
-        # Удаляем отчет через 5 секунд
-        await asyncio.sleep(5)
-        await report.delete()
-        
-    except Exception as e:
-        await interaction.followup.send(f"❌ Ошибка при очистке: {str(e)}", ephemeral=True)
-
+    await interaction.response.send_message(embed=embed)
 
 # Запуск бота
 if __name__ == "__main__":
