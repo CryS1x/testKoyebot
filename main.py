@@ -7,10 +7,14 @@ import time
 from datetime import datetime
 import os
 import asyncio
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
 
 # Конфигурация
 CONFIG = {
-    'TOKEN': 'MTQzMjM2MTcxMDg4MjEyODA3Nw.GquORF.kx_TO1GWRpfNRE2J77kuM0fkAdsLRFYBafMLuc',
+    'TOKEN': os.getenv('DISCORD_BOT_TOKEN'),
     'MAX_LEVEL': 1000,
     'TEXT_XP_MIN': 5,
     'TEXT_XP_MAX': 10,
@@ -18,6 +22,9 @@ CONFIG = {
     'VOICE_XP_PER_MINUTE': 5,
     'XP_PER_LEVEL': 100
 }
+
+if not CONFIG['TOKEN']:
+    raise ValueError("Токен бота не найден! Установите переменную DISCORD_BOT_TOKEN")
 
 # Инициализация бота
 intents = discord.Intents.default()
