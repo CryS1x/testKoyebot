@@ -15,7 +15,7 @@ load_dotenv()
 # Конфигурация
 CONFIG = {
     'TOKEN': os.getenv('DISCORD_BOT_TOKEN'),
-    'DATABASE_URL': os.getenv('DATABASE_URL'),  # Добавьте в .env
+    'DATABASE_URL': os.getenv('DATABASE_URL'),
     'MAX_LEVEL': 1000,
     'TEXT_XP_MIN': 5,
     'TEXT_XP_MAX': 10,
@@ -59,22 +59,7 @@ COLORS = {
     'MESSAGE': discord.Color.blurple()
 }
 
-# Загрузка данных
-def load_data():
-    global user_data, server_settings
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                user_data = json.load(f)
-        except:
-            user_data = {}
-    
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                server_settings = json.load(f)
-        except:
-            server_settings = {}
+# ========== РАБОТА С БАЗОЙ ДАННЫХ ==========
 
 async def init_database():
     """Инициализация подключения к БД и создание таблиц"""
@@ -177,7 +162,6 @@ async def save_user_data(user_id, data):
     except Exception as e:
         print(f"Ошибка сохранения данных пользователя: {e}")
 
-# Получение канала уведомлений
 async def get_notification_channel(guild_id):
     """Получение канала уведомлений"""
     try:
@@ -191,7 +175,6 @@ async def get_notification_channel(guild_id):
         print(f"Ошибка получения канала уведомлений: {e}")
         return None
 
-# Получение канала логов
 async def get_log_channel(guild_id):
     """Получение канала логов"""
     try:
@@ -334,7 +317,6 @@ async def get_audit_log_info(guild, action, target=None):
     
     return None, "Не указана"
 
-# Альтернативная функция для поиска модератора в определенных случаях
 async def find_moderator_for_role_change(guild, target_user, role=None, is_add=True):
     """Улучшенная функция для поиска модератора при изменении ролей"""
     try:
@@ -442,7 +424,7 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
     except Exception as e:
         print(f"Ошибка логирования: {e}")
 
-# Создание современной карточки уровня
+# Создание карточки уровня
 def create_level_embed(user, member):
     data = user
     
@@ -544,7 +526,7 @@ async def create_leaderboard_embed(guild, top_type='total'):
     return embed
 
 # Создание embed статистики пользователя
-def create_user_stats_embed(member):
+async def create_user_stats_embed(member):
     joined_days = (datetime.now().replace(tzinfo=None) - member.joined_at.replace(tzinfo=None)).days
     created_days = (datetime.now().replace(tzinfo=None) - member.created_at.replace(tzinfo=None)).days
     
@@ -559,7 +541,6 @@ def create_user_stats_embed(member):
     
     embed.set_thumbnail(url=member.display_avatar.url)
     
-    # Статус пользователя (только базовый статус)
     status_dict = {
         'online': '🟢 В сети',
         'idle': '🟡 Неактивен', 
@@ -570,7 +551,6 @@ def create_user_stats_embed(member):
     current_status = str(member.status)
     status_text = status_dict.get(current_status, '⚫ Не в сети')
     
-    # Основная информация
     embed.add_field(
         name="👤 Основная информация",
         value=f"**Имя:** `{member.name}`\n"
@@ -581,7 +561,6 @@ def create_user_stats_embed(member):
         inline=False
     )
     
-    # Даты
     embed.add_field(
         name="📅 Даты",
         value=f"**Присоединился:** <t:{int(member.joined_at.timestamp())}:R>\n"
@@ -591,7 +570,6 @@ def create_user_stats_embed(member):
         inline=False
     )
     
-    # Роли
     roles_text = f"**Главная роль:** {top_role.mention}\n**Всего ролей:** `{len(roles)}`"
     if roles:
         roles_text += f"\n**Роли:** {', '.join([role.mention for role in roles[:3]])}"
@@ -604,7 +582,6 @@ def create_user_stats_embed(member):
         inline=False
     )
     
-    # Активность (только если видна)
     activity_text = "❌ Не активно"
     if member.activity:
         activity = member.activity
@@ -628,8 +605,8 @@ def create_user_stats_embed(member):
         inline=True
     )
     
-    # Уровни
-    user_level_data = get_user_data(member.id)
+    # ИСПРАВЛЕНО: добавлен await
+    user_level_data = await get_user_data(member.id)
     level_text = f"**Общий уровень:** `{user_level_data['total_level']}`\n"
     level_text += f"**Текстовый:** `{user_level_data['text_level']}`\n"
     level_text += f"**Голосовой:** `{user_level_data['voice_level']}`\n"
@@ -641,7 +618,6 @@ def create_user_stats_embed(member):
         inline=True
     )
     
-    # Дополнительная информация
     extra_info = ""
     if member.premium_since:
         boost_days = (datetime.now().replace(tzinfo=None) - member.premium_since.replace(tzinfo=None)).days
@@ -691,7 +667,7 @@ async def on_ready():
     
     voice_xp_task.start()
 
-# Обработка сообщений для текстового опыта
+# Обработка сообщений
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
@@ -752,10 +728,18 @@ async def on_voice_state_update(member, before, after):
             )
             
             del voice_tracking[user_id]
+    
+    elif before.channel is not None and after.channel is not None and before.channel != after.channel:
+        await log_action(
+            member.guild,
+            "🎤 Переход между каналами",
+            f"**Из:** {before.channel.mention}\n**В:** {after.channel.mention}",
+            COLORS['VOICE'],
+            member
+        )
 
 @tasks.loop(minutes=1)
 async def voice_xp_task():
-    current_time = time.time()
     for user_id, tracking_data in list(voice_tracking.items()):
         try:
             guild = bot.get_guild(tracking_data['guild_id'])
@@ -814,26 +798,11 @@ async def on_member_unban(guild, user):
     )
 
 @bot.event
-async def on_member_kick(guild, user):
-    moderator, reason = await get_audit_log_info(guild, discord.AuditLogAction.kick, user)
-    await log_action(
-        guild,
-        "👢 Кик участника",
-        f"**Пользователь кикнут с сервера**",
-        COLORS['KICK'],
-        target=user,
-        moderator=moderator,
-        reason=reason
-    )
-
-@bot.event
 async def on_member_update(before, after):
-    # Изменение ролей
     if before.roles != after.roles:
         added_roles = [role for role in after.roles if role not in before.roles]
         removed_roles = [role for role in before.roles if role not in after.roles]
         
-        # Используем специальную функцию для поиска модератора при изменении ролей
         for role in added_roles:
             moderator, reason = await find_moderator_for_role_change(after.guild, after, role, is_add=True)
             await log_action(
@@ -860,7 +829,6 @@ async def on_member_update(before, after):
                 extra_fields={"🎭 Роль": f"{role.mention} (`{role.name}`)"}
             )
     
-    # Изменение ника
     if before.nick != after.nick:
         moderator, reason = await get_audit_log_info(after.guild, discord.AuditLogAction.member_update, after)
         await log_action(
@@ -873,10 +841,9 @@ async def on_member_update(before, after):
             reason=reason
         )
     
-    # Таймаут
     if before.timed_out_until != after.timed_out_until:
         moderator, reason = await get_audit_log_info(after.guild, discord.AuditLogAction.member_update, after)
-        if after.timed_out_until:  # Таймаут установлен
+        if after.timed_out_until:
             duration = (after.timed_out_until - datetime.now().astimezone()).total_seconds() / 60
             await log_action(
                 after.guild,
@@ -887,7 +854,7 @@ async def on_member_update(before, after):
                 moderator=moderator,
                 reason=reason
             )
-        else:  # Таймаут снят
+        else:
             await log_action(
                 after.guild,
                 "🔊 Снятие таймаута",
@@ -969,11 +936,9 @@ async def on_message_delete(message):
     if message.author.bot or not message.guild:
         return
     
-    # Логирование обычного удаления сообщений (не от бота)
     content = message.content or "*Сообщение без текста*"
     attachments_info = f"\n**Вложения:** {len(message.attachments)}" if message.attachments else ""
     
-    # Ищем кто удалил сообщение
     moderator, reason = await get_audit_log_info(message.guild, discord.AuditLogAction.message_delete)
     
     await log_action(
@@ -1007,7 +972,6 @@ async def on_message_edit(before, after):
             moderator=before.author,
             extra_fields={"💬 Канал": before.channel.mention}
         )
-        
     except Exception as e:
         print(f"Ошибка логирования редактирования: {e}")
 
@@ -1424,37 +1388,38 @@ async def level_command(interaction: discord.Interaction):
 async def profile_command(interaction: discord.Interaction, пользователь: discord.Member = None):
     try:
         target = пользователь or interaction.user
-        embed = create_level_embed(target, target)
+        data = await get_user_data(target.id)
+        embed = create_level_embed(data, target)
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде профиль: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
+        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
 
-@bot.tree.command(name="топ_текст", description="Топ-10 игроков по текстовому чату")
-async def top_text_command(interaction: discord.Interaction):
-    try:
-        embed = create_leaderboard_embed(interaction.guild, 'text')
-        await interaction.response.send_message(embed=embed)
-    except Exception as e:
-        print(f"Ошибка в команде топ_текст: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
-
-@bot.tree.command(name="топ_войс", description="Топ-10 игроков по голосовому чату")
-async def top_voice_command(interaction: discord.Interaction):
-    try:
-        embed = create_leaderboard_embed(interaction.guild, 'voice')
-        await interaction.response.send_message(embed=embed)
-    except Exception as e:
-        print(f"Ошибка в команде топ_войс: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
-
-@bot.tree.command(name="топ", description="Топ-10 игроков")
+@bot.tree.command(name="топ", description="Топ-10 игроков общий рейтинг")
 async def top_command(interaction: discord.Interaction):
     try:
         embed = await create_leaderboard_embed(interaction.guild, 'total')
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде топ: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
+
+@bot.tree.command(name="топ_текст", description="Топ-10 игроков по текстовому чату")
+async def top_text_command(interaction: discord.Interaction):
+    try:
+        embed = await create_leaderboard_embed(interaction.guild, 'text')
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Ошибка в команде топ_текст: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
+
+@bot.tree.command(name="топ_войс", description="Топ-10 игроков по голосовому чату")
+async def top_voice_command(interaction: discord.Interaction):
+    try:
+        embed = await create_leaderboard_embed(interaction.guild, 'voice')
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Ошибка в команде топ_войс: {e}")
         await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="статистика", description="Показать подробную статистику пользователя")
@@ -1466,11 +1431,11 @@ async def stats_command(interaction: discord.Interaction, пользовател
     
     try:
         target = пользователь or interaction.user
-        embed = create_user_stats_embed(target)
+        embed = await create_user_stats_embed(target)
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде статистика: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
+        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="бан", description="Забанить пользователя")
 @app_commands.describe(
@@ -1712,8 +1677,8 @@ async def set_logs_command(interaction: discord.Interaction, канал: discord
         color=discord.Color.green()
     )
     await interaction.response.send_message(embed=embed)
-    
-@bot.tree.command(name="дать_уровень", description="Выдать уровень пользователю (только для админов)")
+
+@bot.tree.command(name="дать_уровень", description="Выдать опыт пользователю")
 @app_commands.describe(
     пользователь="Выберите пользователя",
     тип="Тип опыта",
@@ -1730,7 +1695,7 @@ async def give_level_command(
     количество: int
 ):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
+        await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
         return
     
     if количество < 1:
@@ -1749,7 +1714,7 @@ async def give_level_command(
 
 @bot.tree.command(name="логи_инфо", description="Показать информацию о настройках логов")
 async def logs_info_command(interaction: discord.Interaction):
-    guild_id = str(interaction.guild.id)
+    guild_id = interaction.guild.id
     
     embed = discord.Embed(
         title="📊 Информация о системе логов",
@@ -1757,8 +1722,8 @@ async def logs_info_command(interaction: discord.Interaction):
         timestamp=datetime.now()
     )
     
-    notification_channel = get_notification_channel(guild_id)
-    log_channel = get_log_channel(guild_id)
+    notification_channel = await get_notification_channel(guild_id)
+    log_channel = await get_log_channel(guild_id)
     
     embed.add_field(
         name="🔔 Канал уведомлений",
