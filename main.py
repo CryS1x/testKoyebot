@@ -75,7 +75,7 @@ async def init_database():
         )
         
         async with db_pool.acquire() as conn:
-            # Таблица пользователей (ОБНОВЛЕНА)
+            # Таблица пользователей
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -85,12 +85,21 @@ async def init_database():
                     voice_level INTEGER DEFAULT 1,
                     total_xp INTEGER DEFAULT 0,
                     total_level INTEGER DEFAULT 1,
-                    prestige INTEGER DEFAULT 0,
-                    profile_text TEXT DEFAULT NULL,
-                    profile_text_updated TIMESTAMP DEFAULT NULL,
                     last_updated TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            
+            # МИГРАЦИЯ: Добавляем новые колонки если их нет
+            try:
+                await conn.execute('''
+                    ALTER TABLE users 
+                    ADD COLUMN IF NOT EXISTS prestige INTEGER DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS profile_text TEXT DEFAULT NULL,
+                    ADD COLUMN IF NOT EXISTS profile_text_updated TIMESTAMP DEFAULT NULL
+                ''')
+                print("✅ Миграция базы данных выполнена успешно!")
+            except Exception as migration_error:
+                print(f"⚠️ Ошибка миграции: {migration_error}")
             
             # Таблица настроек серверов
             await conn.execute('''
@@ -102,11 +111,15 @@ async def init_database():
                 )
             ''')
             
-            # Индексы для оптимизации
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_total_xp ON users(total_xp DESC)')
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_text_xp ON users(text_xp DESC)')
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_voice_xp ON users(voice_xp DESC)')
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_prestige ON users(prestige DESC)')
+            # Индексы для оптимизации (с обработкой ошибок)
+            try:
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_total_xp ON users(total_xp DESC)')
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_text_xp ON users(text_xp DESC)')
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_voice_xp ON users(voice_xp DESC)')
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_prestige ON users(prestige DESC)')
+                print("✅ Индексы созданы/обновлены!")
+            except Exception as index_error:
+                print(f"⚠️ Ошибка создания индексов: {index_error}")
             
         print("✅ База данных успешно инициализирована!")
         
@@ -124,9 +137,20 @@ async def get_user_data(user_id):
             )
             
             if row:
-                return dict(row)
+                # Создаем словарь с учетом возможного отсутствия новых полей
+                user_data = dict(row)
+                
+                # Добавляем новые поля если их нет
+                if 'prestige' not in user_data:
+                    user_data['prestige'] = 0
+                if 'profile_text' not in user_data:
+                    user_data['profile_text'] = None
+                if 'profile_text_updated' not in user_data:
+                    user_data['profile_text_updated'] = None
+                
+                return user_data
             else:
-                # Создаём нового пользователя
+                # Создаём нового пользователя с новыми полями
                 await conn.execute('''
                     INSERT INTO users (user_id, text_xp, text_level, voice_xp, voice_level, total_xp, total_level, prestige)
                     VALUES ($1, 0, 1, 0, 1, 0, 1, 0)
@@ -163,16 +187,35 @@ async def save_user_data(user_id, data):
     """Сохранение данных пользователя в БД"""
     try:
         async with db_pool.acquire() as conn:
+            # Используем UPSERT для обновления или создания записи
             await conn.execute('''
-                UPDATE users 
-                SET text_xp = $2, text_level = $3, voice_xp = $4, voice_level = $5, 
-                    total_xp = $6, total_level = $7, prestige = $8, 
-                    profile_text = $9, profile_text_updated = $10, last_updated = NOW()
-                WHERE user_id = $1
-            ''', int(user_id), data['text_xp'], data['text_level'], 
-                data['voice_xp'], data['voice_level'], data['total_xp'], 
-                data['total_level'], data.get('prestige', 0),
-                data.get('profile_text'), data.get('profile_text_updated'))
+                INSERT INTO users (user_id, text_xp, text_level, voice_xp, voice_level, 
+                                 total_xp, total_level, prestige, profile_text, profile_text_updated, last_updated)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+                ON CONFLICT (user_id) 
+                DO UPDATE SET 
+                    text_xp = EXCLUDED.text_xp,
+                    text_level = EXCLUDED.text_level,
+                    voice_xp = EXCLUDED.voice_xp,
+                    voice_level = EXCLUDED.voice_level,
+                    total_xp = EXCLUDED.total_xp,
+                    total_level = EXCLUDED.total_level,
+                    prestige = EXCLUDED.prestige,
+                    profile_text = EXCLUDED.profile_text,
+                    profile_text_updated = EXCLUDED.profile_text_updated,
+                    last_updated = NOW()
+            ''', 
+            int(user_id), 
+            data['text_xp'], 
+            data['text_level'], 
+            data['voice_xp'], 
+            data['voice_level'], 
+            data['total_xp'], 
+            data['total_level'],
+            data.get('prestige', 0),
+            data.get('profile_text'),
+            data.get('profile_text_updated')
+            )
     except Exception as e:
         print(f"Ошибка сохранения данных пользователя: {e}")
 
