@@ -1246,9 +1246,10 @@ async def on_voice_state_update(member, before, after):
         )
 
 # Улучшенная функция логирования
+# Логирование действий
 async def log_action(guild, action, description, color=COLORS['INFO'], target=None, moderator=None, reason=None, extra_fields=None):
     try:
-        log_channel_id = get_log_channel(guild.id)
+        log_channel_id = await get_log_channel(guild.id)  # БЫЛО: get_log_channel(guild.id) БЕЗ await
         if not log_channel_id:
             return
         
@@ -1263,63 +1264,31 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
             timestamp=datetime.now()
         )
         
-        # Всегда показываем участника, если он есть
         if target:
             embed.add_field(
-                name="👤 Участник", 
-                value=f"{target.mention}\nИмя: `{target.name}`\nДискриминатор: `{target.discriminator}`", 
+                name="👤 Участник",
+                value=f"{target.mention} (`{target.id}`)\nИмя: `{target.name}`",
                 inline=True
             )
         
-        # Всегда показываем кто взаимодействовал
         if moderator:
             embed.add_field(
-                name="🛡️ Взаимодействовал", 
-                value=f"{moderator.mention}\nИмя: `{moderator.name}`", 
-                inline=True
-            )
-        else:
-            embed.add_field(
-                name="🛡️ Взаимодействовал", 
-                value="❌ Неизвестно", 
+                name="🛡️ Модератор",
+                value=f"{moderator.mention} (`{moderator.id}`)\nИмя: `{moderator.name}`",
                 inline=True
             )
         
-        # Показываем причину если есть
         if reason and reason != "Не указана":
             embed.add_field(name="📋 Причина", value=reason, inline=False)
         
-        # Дополнительные поля
         if extra_fields:
             for field_name, field_value in extra_fields.items():
-                embed.add_field(name=field_name, value=field_value, inline=True)
+                embed.add_field(name=field_name, value=field_value, inline=False)
         
         embed.set_footer(text=f"ID: {target.id if target else 'Система'}")
         
-        # Задержка для избежания rate limits
         await asyncio.sleep(0.5)
-        
-        # Пытаемся отправить сообщение
-        try:
-            await channel.send(embed=embed)
-        except discord.Forbidden:
-            # Если нет прав для отправки в канал логов
-            if CONFIG['ADMIN_ALERT_ENABLED'] and moderator:
-                await send_admin_alert(
-                    guild,
-                    "Попытка отправить лог в канал без прав",
-                    moderator,
-                    f"Бот не имеет прав для отправки сообщений в канал логов {channel.mention}"
-                )
-            return
-        except discord.HTTPException as e:
-            if e.status == 429:  # Rate limit
-                retry_after = e.retry_after
-                print(f"Rate limit hit, retrying in {retry_after} seconds")
-                await asyncio.sleep(retry_after)
-                await log_action(guild, action, description, color, target, moderator, reason, extra_fields)
-            else:
-                print(f"Ошибка логирования: {e}")
+        await channel.send(embed=embed)
         
     except Exception as e:
         print(f"Ошибка логирования: {e}")
