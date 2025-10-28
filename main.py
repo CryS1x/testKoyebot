@@ -422,6 +422,49 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
         await channel.send(embed=embed)
         
     except Exception as e:
+        print(f"Ошибка логирования: {e}")    try:
+        log_channel_id = await get_log_channel(guild.id)
+        if not log_channel_id:
+            return
+        
+        channel = bot.get_channel(int(log_channel_id))
+        if not channel:
+            return
+        
+        embed = discord.Embed(
+            title=f"📝 {action}",
+            description=description,
+            color=color,
+            timestamp=datetime.now()
+        )
+        
+        if target:
+            embed.add_field(
+                name="👤 Участник",
+                value=f"{target.mention} (`{target.id}`)\nИмя: `{target.name}`",
+                inline=True
+            )
+        
+        if moderator:
+            embed.add_field(
+                name="🛡️ Модератор",
+                value=f"{moderator.mention} (`{moderator.id}`)\nИмя: `{moderator.name}`",
+                inline=True
+            )
+        
+        if reason and reason != "Не указана":
+            embed.add_field(name="📋 Причина", value=reason, inline=False)
+        
+        if extra_fields:
+            for field_name, field_value in extra_fields.items():
+                embed.add_field(name=field_name, value=field_value, inline=False)
+        
+        embed.set_footer(text=f"ID: {target.id if target else 'Система'}")
+        
+        await asyncio.sleep(0.5)
+        await channel.send(embed=embed)
+        
+    except Exception as e:
         print(f"Ошибка логирования: {e}")
 
 # Создание карточки уровня
@@ -974,7 +1017,7 @@ async def on_message_edit(before, after):
         )
     except Exception as e:
         print(f"Ошибка логирования редактирования: {e}")
-
+        
 @bot.event
 async def on_raw_bulk_message_delete(payload):
     if not payload.guild_id:
