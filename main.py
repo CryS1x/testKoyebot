@@ -1266,15 +1266,15 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
         
         if target:
             embed.add_field(
-                name="🎯 Объект действия",
-                value=f"```{target.mention} (ID: {target.id})\nИмя: {target.name}```",
+                name="```🎯 Объект действия```",
+                value=f"{target.mention} (ID: {target.id})\nИмя: {target.name}",
                 inline=True
             )
         
         if moderator:
             embed.add_field(
-                name="👑 Исполнитель",
-                value=f"```{moderator.mention} (ID: {moderator.id})\nИмя: {moderator.name}```", 
+                name="```👑 Исполнитель```",
+                value=f"{moderator.mention} (ID: {moderator.id})\nИмя: {moderator.name}", 
                 inline=True
             )
         
