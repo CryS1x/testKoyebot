@@ -75,7 +75,7 @@ async def init_database():
         )
         
         async with db_pool.acquire() as conn:
-            # Таблица пользователей
+            # Таблица пользователей (ОКОНЧАТЕЛЬНАЯ ВЕРСИЯ)
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -85,21 +85,12 @@ async def init_database():
                     voice_level INTEGER DEFAULT 1,
                     total_xp INTEGER DEFAULT 0,
                     total_level INTEGER DEFAULT 1,
+                    prestige INTEGER DEFAULT 0,
+                    profile_text TEXT DEFAULT NULL,
+                    profile_text_updated TIMESTAMP DEFAULT NULL,
                     last_updated TIMESTAMP DEFAULT NOW()
                 )
             ''')
-            
-            # МИГРАЦИЯ: Добавляем новые колонки если их нет
-            try:
-                await conn.execute('''
-                    ALTER TABLE users 
-                    ADD COLUMN IF NOT EXISTS prestige INTEGER DEFAULT 0,
-                    ADD COLUMN IF NOT EXISTS profile_text TEXT DEFAULT NULL,
-                    ADD COLUMN IF NOT EXISTS profile_text_updated TIMESTAMP DEFAULT NULL
-                ''')
-                print("✅ Миграция базы данных выполнена успешно!")
-            except Exception as migration_error:
-                print(f"⚠️ Ошибка миграции: {migration_error}")
             
             # Таблица настроек серверов
             await conn.execute('''
@@ -111,15 +102,11 @@ async def init_database():
                 )
             ''')
             
-            # Индексы для оптимизации (с обработкой ошибок)
-            try:
-                await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_total_xp ON users(total_xp DESC)')
-                await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_text_xp ON users(text_xp DESC)')
-                await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_voice_xp ON users(voice_xp DESC)')
-                await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_prestige ON users(prestige DESC)')
-                print("✅ Индексы созданы/обновлены!")
-            except Exception as index_error:
-                print(f"⚠️ Ошибка создания индексов: {index_error}")
+            # Индексы для оптимизации
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_total_xp ON users(total_xp DESC)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_text_xp ON users(text_xp DESC)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_voice_xp ON users(voice_xp DESC)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_prestige ON users(prestige DESC)')
             
         print("✅ База данных успешно инициализирована!")
         
@@ -2246,7 +2233,7 @@ async def profile_text_command(interaction: discord.Interaction, текст: str
     except Exception as e:
         print(f"Ошибка в команде профиль_текст: {e}")
         await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
-        
+
 @bot.tree.command(name="профиль_текст_сброс", description="Сбросить текст профиля")
 async def profile_text_reset_command(interaction: discord.Interaction):
     try:
@@ -2265,6 +2252,233 @@ async def profile_text_reset_command(interaction: discord.Interaction):
         
     except Exception as e:
         print(f"Ошибка в команде профиль_текст_сброс: {e}")
+        await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
+
+@bot.tree.command(name="сброс_юзера", description="Полный сброс пользователя (только для БОГОВ!)")
+@app_commands.describe(пользователь="Пользователь для сброса")
+async def reset_user_command(interaction: discord.Interaction, пользователь: discord.Member):
+    """Полный сброс данных пользователя"""
+    
+    # ID создателя бота и владельца сервера
+    BOT_OWNER_ID = 852962557002252289
+    SERVER_OWNER_ID = interaction.guild.owner_id
+    
+    # Проверяем права: создатель бота ИЛИ владелец сервера
+    if interaction.user.id != BOT_OWNER_ID and interaction.user.id != SERVER_OWNER_ID:
+        await interaction.response.send_message(
+            "⛔ Эта команда доступна только создателю бота или владельцу сервера!", 
+            ephemeral=True
+        )
+        return
+    
+    try:
+        # Получаем текущие данные пользователя (для логов)
+        old_data = await get_user_data(пользователь.id)
+        
+        # Полный сброс данных
+        reset_data = {
+            'user_id': пользователь.id,
+            'text_xp': 0,
+            'text_level': 1,
+            'voice_xp': 0,
+            'voice_level': 1,
+            'total_xp': 0,
+            'total_level': 1,
+            'prestige': 0,
+            'profile_text': None,
+            'profile_text_updated': None
+        }
+        
+        # Сохраняем сброшенные данные
+        await save_user_data(пользователь.id, reset_data)
+        
+        # Создаем embed с результатами
+        embed = discord.Embed(
+            title="🔄 Полный сброс пользователя",
+            color=discord.Color.orange(),
+            timestamp=datetime.now()
+        )
+        
+        embed.add_field(
+            name="🎯 Объект сброса",
+            value=f"{пользователь.mention} (`{пользователь.id}`)",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="👑 Исполнитель",
+            value=f"{interaction.user.mention}",
+            inline=True
+        )
+        
+        # Информация о сброшенных данных
+        reset_info = [
+            f"• **Уровни:** `{old_data['total_level']}` → `1`",
+            f"• **Опыт:** `{old_data['total_xp']:,}` → `0`",
+            f"• **Престиж:** `{old_data.get('prestige', 0)}` → `0`",
+            f"• **Текст профиля:** {'Удален' if old_data.get('profile_text') else 'Не было'}"
+        ]
+        
+        embed.add_field(
+            name="📊 Сброшенные данные",
+            value="\n".join(reset_info),
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Сброс выполнен")
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Логируем действие
+        await log_action(
+            interaction.guild,
+            "🔄 Полный сброс пользователя",
+            f"**Пользователь:** {пользователь.mention} (`{пользователь.id}`)\n"
+            f"**Исполнитель:** {interaction.user.mention}",
+            discord.Color.orange(),
+            target=пользователь,
+            moderator=interaction.user,
+            reason="Административный сброс",
+            extra_fields={
+                "📊 До сброса": f"Уровень: {old_data['total_level']}, Опыт: {old_data['total_xp']:,}, Престиж: {old_data.get('prestige', 0)}",
+                "🔄 После сброса": "Уровень: 1, Опыт: 0, Престиж: 0"
+            }
+        )
+        
+        # Отправляем уведомление пользователю (если возможно)
+        try:
+            user_embed = discord.Embed(
+                title="🔄 Ваш профиль был сброшен",
+                description="Все ваши уровни, опыт и прогресс были обнулены администратором.",
+                color=discord.Color.orange(),
+                timestamp=datetime.now()
+            )
+            
+            user_embed.add_field(
+                name="📊 Сброшено:",
+                value="• Все уровни и опыт\n• Престиж\n• Текст профиля",
+                inline=False
+            )
+            
+            user_embed.add_field(
+                name="👑 Исполнитель:",
+                value=f"{interaction.user.display_name}",
+                inline=True
+            )
+            
+            user_embed.set_footer(text="Вы можете начать прогресс заново!")
+            
+            await пользователь.send(embed=user_embed)
+        except discord.Forbidden:
+            print(f"⛔ Не удалось отправить уведомление пользователю {пользователь.name}")
+        
+    except Exception as e:
+        print(f"Ошибка при сбросе пользователя: {e}")
+        await interaction.response.send_message(
+            f"⛔ Произошла ошибка при сбросе пользователя: {str(e)}", 
+            ephemeral=True
+        )
+
+@bot.tree.command(name="инфо_юзер", description="Детальная информация о пользователе (только для БОГОВ!)")
+@app_commands.describe(пользователь="Пользователь для проверки")
+async def user_info_command(interaction: discord.Interaction, пользователь: discord.Member):
+    """Детальная информация о пользователе для администраторов"""
+    
+    # ID создателя бота и владельца сервера
+    BOT_OWNER_ID = 852962557002252289
+    SERVER_OWNER_ID = interaction.guild.owner_id
+    
+    # Проверяем права: создатель бота ИЛИ владелец сервера
+    if interaction.user.id != BOT_OWNER_ID and interaction.user.id != SERVER_OWNER_ID:
+        await interaction.response.send_message(
+            "⛔ Эта команда доступна только создателю бота или владельцу сервера!", 
+            ephemeral=True
+        )
+        return
+    
+    try:
+        user_data = await get_user_data(пользователь.id)
+        
+        embed = discord.Embed(
+            title=f"📊 Детальная информация о {пользователь.display_name}",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        embed.set_thumbnail(url=пользователь.display_avatar.url)
+        
+        # Основная информация
+        embed.add_field(
+            name="👤 Основные данные",
+            value=f"**ID:** `{пользователь.id}`\n"
+                  f"**Имя:** `{пользователь.name}`\n"
+                  f"**Отображаемое имя:** `{пользователь.display_name}`\n"
+                  f"**Бот:** {'✅' if пользователь.bot else '⛔'}",
+            inline=False
+        )
+        
+        # Прогресс
+        embed.add_field(
+            name="📈 Прогресс",
+            value=f"**Общий уровень:** `{user_data['total_level']}`\n"
+                  f"**Общий опыт:** `{user_data['total_xp']:,}`\n"
+                  f"**Престиж:** `{user_data.get('prestige', 0)}/3`",
+            inline=True
+        )
+        
+        # Детали по типам опыта
+        embed.add_field(
+            name="💬 Текстовый чат",
+            value=f"**Уровень:** `{user_data['text_level']}`\n"
+                  f"**Опыт:** `{user_data['text_xp']:,}`",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎤 Голосовой чат", 
+            value=f"**Уровень:** `{user_data['voice_level']}`\n"
+                  f"**Опыт:** `{user_data['voice_xp']:,}`",
+            inline=True
+        )
+        
+        # Кастомный текст
+        profile_text = user_data.get('profile_text')
+        if profile_text:
+            embed.add_field(
+                name="💭 Текст профиля",
+                value=f"```{profile_text}```",
+                inline=False
+            )
+        
+        # Дата последнего обновления
+        last_updated = user_data.get('last_updated')
+        if last_updated:
+            if isinstance(last_updated, datetime):
+                embed.add_field(
+                    name="⏰ Последняя активность",
+                    value=f"<t:{int(last_updated.timestamp())}:R>",
+                    inline=True
+                )
+        
+        # Информация о возможности престижа
+        can_prestige = (
+            user_data.get('prestige', 0) < 3 and 
+            user_data['text_level'] >= 1000 and 
+            user_data['voice_level'] >= 1000
+        )
+        
+        embed.add_field(
+            name="🎯 Статус престижа",
+            value=f"**Доступен:** {'✅' if can_prestige else '⛔'}",
+            inline=True
+        )
+        
+        embed.set_footer(text=f"Запрошено {interaction.user.display_name}")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"Ошибка в команде инфо_юзер: {e}")
         await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
 
 # Запуск бота
