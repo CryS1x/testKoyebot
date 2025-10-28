@@ -40,7 +40,8 @@ db_pool = None
 
 # Хранилище данных (для кэша)
 cooldowns = {}
-voice_tracking = {}
+voice_sessions = {}  # {user_id: {'start_time': timestamp, 'guild_id': guild_id, 'channel_id': channel_id}}
+voice_xp_cache = {}  # {user_id: {'last_xp_time': timestamp, 'pending_xp': xp}}
 
 # Цвета для эмбедов
 COLORS = {
@@ -610,21 +611,43 @@ async def create_user_stats_embed(member):
 @bot.event
 async def on_ready():
     print(f'✅ Бот {bot.user.name} запущен!')
+    print(f'📊 Настройки XP:')
+    print(f'   Текстовый: {CONFIG["TEXT_XP_MIN"]}-{CONFIG["TEXT_XP_MAX"]} XP, кулдаун: {CONFIG["TEXT_COOLDOWN"]}с')
+    print(f'   Голосовой: {CONFIG["VOICE_XP_PER_MINUTE"]} XP/мин')
+    print(f'   XP за уровень: {CONFIG["XP_PER_LEVEL"]}')
     
     await init_database()
     
+    # Восстановление голосовых сессий после перезапуска
+    print("🔍 Восстановление голосовых сессий...")
     for guild in bot.guilds:
-        perms = guild.me.guild_permissions
-        if not perms.view_audit_log:
-            print(f'⚠️ Внимание: Бот не имеет прав на просмотр аудит-логов на сервере {guild.name}')
+        for channel in guild.voice_channels:
+            for member in channel.members:
+                if not member.bot:
+                    user_id = str(member.id)
+                    if user_id not in voice_sessions:
+                        voice_sessions[user_id] = {
+                            'start_time': time.time(),
+                            'guild_id': guild.id,
+                            'channel_id': channel.id,
+                            'last_xp_time': time.time()
+                        }
+                        voice_xp_cache[user_id] = {
+                            'last_xp_time': time.time(),
+                            'pending_xp': 0
+                        }
+                        print(f"🎤 Восстановлена сессия для {member.name} в {channel.name}")
+    
+    print(f"✅ Восстановлено {len(voice_sessions)} голосовых сессий")
     
     try:
         synced = await bot.tree.sync()
-        print(f'Синхронизировано {len(synced)} команд')
+        print(f'✅ Синхронизировано {len(synced)} команд')
     except Exception as e:
-        print(f'Ошибка синхронизации команд: {e}')
+        print(f'⛔ Ошибка синхронизации команд: {e}')
     
     voice_xp_task.start()
+    print('✅ Фоновая задача голосового XP запущена')
 
 # Обработка сообщений
 @bot.event
@@ -656,70 +679,170 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # Отслеживание голосовых каналов
+# Глобальные переменные для трекинга голосовых каналов
+voice_sessions = {}  # {user_id: {'start_time': timestamp, 'guild_id': guild_id, 'channel_id': channel_id}}
+voice_xp_cache = {}  # {user_id: {'last_xp_time': timestamp, 'pending_xp': xp}}
+
+# Улучшенное отслеживание голосовых каналов
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot:
         return
     
     user_id = str(member.id)
+    current_time = time.time()
     
     # Вход в голосовой канал
     if before.channel is None and after.channel is not None:
-        voice_tracking[user_id] = {
-            'start_time': time.time(),
+        voice_sessions[user_id] = {
+            'start_time': current_time,
             'guild_id': member.guild.id,
-            'last_xp_time': time.time()
+            'channel_id': after.channel.id,
+            'last_xp_time': current_time
         }
-        print(f"🎤 {member.name} вошел в {after.channel.name}")
+        voice_xp_cache[user_id] = {
+            'last_xp_time': current_time,
+            'pending_xp': 0
+        }
+        print(f"🎤 {member.name} вошел в голосовой канал: {after.channel.name}")
+        
+        await log_action(
+            member.guild,
+            "🎤 Вход в голосовой канал",
+            f"**Канал:** {after.channel.mention}",
+            COLORS['VOICE'],
+            member
+        )
     
     # Выход из голосового канала
     elif before.channel is not None and after.channel is None:
-        if user_id in voice_tracking:
-            tracking_data = voice_tracking[user_id]
-            duration = time.time() - tracking_data['start_time']
-            minutes = max(1, int(duration / 60))
+        if user_id in voice_sessions:
+            session_data = voice_sessions[user_id]
+            session_duration = current_time - session_data['start_time']
+            session_minutes = int(session_duration / 60)
             
-            xp = minutes * CONFIG['VOICE_XP_PER_MINUTE']
-            await add_xp(user_id, xp, 'voice', member.guild)
-            print(f"🎤 {member.name} вышел из {before.channel.name}: +{xp} XP за {minutes} минут")
+            # Начисляем весь накопленный опыт
+            if user_id in voice_xp_cache:
+                pending_xp = voice_xp_cache[user_id]['pending_xp']
+                if pending_xp > 0:
+                    await add_xp(user_id, pending_xp, 'voice', member.guild)
+                    print(f"🎤 {member.name} вышел: +{pending_xp} XP за {session_minutes} минут в голосовом")
+                
+                del voice_xp_cache[user_id]
             
-            del voice_tracking[user_id]
+            del voice_sessions[user_id]
+            
+            await log_action(
+                member.guild,
+                "🎤 Выход из голосового канала",
+                f"**Канал:** {before.channel.mention}\n**Продолжительность:** `{session_minutes} минут`",
+                COLORS['VOICE'],
+                member
+            )
     
-    # Смена канала
+    # Переход между каналами
     elif before.channel is not None and after.channel is not None and before.channel != after.channel:
-        if user_id in voice_tracking:
-            # Начисляем XP за время в предыдущем канале
-            tracking_data = voice_tracking[user_id]
-            duration = time.time() - tracking_data['start_time']
-            minutes = max(1, int(duration / 60))
+        if user_id in voice_sessions:
+            # Начисляем опыт за время в предыдущем канале
+            session_data = voice_sessions[user_id]
+            session_duration = current_time - session_data['start_time']
+            session_minutes = int(session_duration / 60)
             
-            xp = minutes * CONFIG['VOICE_XP_PER_MINUTE']
-            await add_xp(user_id, xp, 'voice', member.guild)
-            print(f"🎤 {member.name} перешел между каналами: +{xp} XP")
+            if user_id in voice_xp_cache:
+                pending_xp = voice_xp_cache[user_id]['pending_xp']
+                if pending_xp > 0:
+                    await add_xp(user_id, pending_xp, 'voice', member.guild)
+                    print(f"🎤 {member.name} перешел: +{pending_xp} XP за {session_minutes} минут")
             
-            # Обновляем время для нового канала
-            voice_tracking[user_id] = {
-                'start_time': time.time(),
+            # Начинаем новую сессию в новом канале
+            voice_sessions[user_id] = {
+                'start_time': current_time,
                 'guild_id': member.guild.id,
-                'last_xp_time': time.time()
+                'channel_id': after.channel.id,
+                'last_xp_time': current_time
             }
+            voice_xp_cache[user_id] = {
+                'last_xp_time': current_time,
+                'pending_xp': 0
+            }
+            
+            await log_action(
+                member.guild,
+                "🎤 Переход между каналами",
+                f"**Из:** {before.channel.mention}\n**В:** {after.channel.mention}",
+                COLORS['VOICE'],
+                member
+            )
+    
+    # Проверка мута/деафа (не начисляем XP если пользователь заглушен)
+    elif before.channel is not None and after.channel is not None and before.channel == after.channel:
+        # Если пользователь сам себя заглушил/деафил - не начисляем XP
+        if (before.self_mute != after.self_mute and after.self_mute) or \
+           (before.self_deaf != after.self_deaf and after.self_deaf):
+            if user_id in voice_xp_cache:
+                voice_xp_cache[user_id]['last_xp_time'] = current_time  # Сбрасываем таймер
+                print(f"🎤 {member.name} заглушил себя - XP приостановлен")
+        
+        # Если пользователь размутился - возобновляем начисление XP
+        elif (before.self_mute != after.self_mute and not after.self_mute) or \
+             (before.self_deaf != after.self_deaf and not after.self_deaf):
+            if user_id in voice_xp_cache:
+                voice_xp_cache[user_id]['last_xp_time'] = current_time  # Возобновляем таймер
+                print(f"🎤 {member.name} размутился - XP возобновлен")
 
 @tasks.loop(minutes=1)
 async def voice_xp_task():
+    """Фоновая задача для начисления голосового опыта каждую минуту"""
     current_time = time.time()
-    for user_id, tracking_data in list(voice_tracking.items()):
+    
+    for user_id, session_data in list(voice_sessions.items()):
         try:
-            # Начисляем XP каждую минуту
-            if current_time - tracking_data['last_xp_time'] >= 60:
-                guild = bot.get_guild(tracking_data['guild_id'])
-                if guild:
-                    await add_xp(user_id, CONFIG['VOICE_XP_PER_MINUTE'], 'voice', guild)
-                    print(f"🎤 Фоновая XP для {user_id}: +{CONFIG['VOICE_XP_PER_MINUTE']} XP")
+            if user_id not in voice_xp_cache:
+                continue
+                
+            xp_data = voice_xp_cache[user_id]
+            
+            # Проверяем, прошла ли минута с последнего начисления
+            if current_time - xp_data['last_xp_time'] >= 60:
+                
+                # Проверяем, что пользователь все еще в голосовом канале
+                guild = bot.get_guild(session_data['guild_id'])
+                if not guild:
+                    continue
                     
-                    # Обновляем время последнего начисления
-                    voice_tracking[user_id]['last_xp_time'] = current_time
+                member = guild.get_member(int(user_id))
+                if not member or not member.voice or not member.voice.channel:
+                    # Пользователь вышел из канала, но сессия не очищена
+                    if user_id in voice_sessions:
+                        del voice_sessions[user_id]
+                    if user_id in voice_xp_cache:
+                        del voice_xp_cache[user_id]
+                    continue
+                
+                # Проверяем, что пользователь не заглушен
+                if member.voice.self_mute or member.voice.self_deaf or member.voice.mute or member.voice.deaf:
+                    # Пропускаем начисление, но не сбрасываем таймер
+                    print(f"🎤 {member.name} заглушен - пропускаем XP")
+                    continue
+                
+                # Начисляем XP за минуту
+                xp_to_add = CONFIG['VOICE_XP_PER_MINUTE']
+                xp_data['pending_xp'] += xp_to_add
+                xp_data['last_xp_time'] = current_time
+                
+                # Накопленный опыт (начисляем каждые 5 минут или при выходе)
+                if xp_data['pending_xp'] >= CONFIG['VOICE_XP_PER_MINUTE'] * 5:
+                    await add_xp(user_id, xp_data['pending_xp'], 'voice', guild)
+                    print(f"🎤 Фоновая XP для {member.name}: +{xp_data['pending_xp']} XP")
+                    xp_data['pending_xp'] = 0
+                
         except Exception as e:
-            print(f"⛔ Ошибка в voice_xp_task: {e}")
+            print(f"⛔ Ошибка в voice_xp_task для {user_id}: {e}")
+            # Очищаем проблемные сессии
+            if user_id in voice_sessions:
+                del voice_sessions[user_id]
+            if user_id in voice_xp_cache:
+                del voice_xp_cache[user_id]
 
 # ========== ПОЛНАЯ СИСТЕМА ЛОГИРОВАНИЯ ==========
 
@@ -1230,41 +1353,6 @@ async def on_webhooks_update(channel):
         extra_fields={"💬 Канал": channel.mention}
     )
 
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if member.bot:
-        return
-    
-    # Пользователь зашел в голосовой канал
-    if before.channel is None and after.channel is not None:
-        await log_action(
-            member.guild,
-            "🎤 Вход в голосовой канал",
-            f"**Канал:** {after.channel.mention}\n**Категория:** `{after.channel.category.name if after.channel.category else 'Нет'}`",
-            COLORS['VOICE'],
-            member
-        )
-    
-    # Пользователь вышел из голосового канала
-    elif before.channel is not None and after.channel is None:
-        await log_action(
-            member.guild,
-            "🎤 Выход из голосового канала",
-            f"**Канал:** {before.channel.mention}",
-            COLORS['VOICE'],
-            member
-        )
-    
-    # Пользователь перешел между каналами
-    elif before.channel is not None and after.channel is not None and before.channel != after.channel:
-        await log_action(
-            member.guild,
-            "🎤 Переход между каналами",
-            f"**Из:** {before.channel.mention}\n**В:** {after.channel.mention}",
-            COLORS['VOICE'],
-            member
-        )
-
 # Улучшенная функция логирования
 # Логирование действий
 async def log_action(guild, action, description, color=COLORS['INFO'], target=None, moderator=None, reason=None, extra_fields=None):
@@ -1364,49 +1452,82 @@ async def top_voice_command(interaction: discord.Interaction):
         print(f"Ошибка в команде топ_войс: {e}")
         await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
 
-@bot.tree.command(name="проверка_опыта", description="Проверить систему начисления опыта")
-async def test_xp_command(interaction: discord.Interaction):
-    """Команда для тестирования системы опыта"""
+@bot.tree.command(name="проверить_войс", description="Принудительная проверка голосовых пользователей (админ)")
+async def force_voice_check_command(interaction: discord.Interaction):
+    """Принудительная проверка всех пользователей в голосовых каналах"""
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("⛔ Требуются права администратора!", ephemeral=True)
+        return
+    
     try:
-        # Тестируем текстовый опыт
-        test_xp = 10
-        await add_xp(interaction.user.id, test_xp, 'text', interaction.guild)
-        
-        # Получаем обновленные данные
-        user_data = await get_user_data(interaction.user.id)
-        
         embed = discord.Embed(
-            title="🧪 Проверка системы опыта",
-            color=discord.Color.blue()
+            title="🔍 Проверка голосовых каналов",
+            color=discord.Color.orange()
         )
         
-        embed.add_field(
-            name="💬 Текстовый опыт",
-            value=f"Опыт: {user_data['text_xp']} XP\nУровень: {user_data['text_level']}",
-            inline=True
-        )
+        voice_channels = []
+        total_members = 0
+        active_tracking = 0
+        
+        for channel in interaction.guild.voice_channels:
+            if channel.members:
+                voice_channels.append(channel)
+                total_members += len(channel.members)
+                
+                for member in channel.members:
+                    if not member.bot:
+                        user_id = str(member.id)
+                        if user_id in voice_sessions:
+                            active_tracking += 1
+        
+        if voice_channels:
+            channels_info = []
+            for channel in voice_channels:
+                non_bot_members = [m for m in channel.members if not m.bot]
+                if non_bot_members:
+                    members_list = ", ".join([m.display_name for m in non_bot_members[:3]])
+                    if len(non_bot_members) > 3:
+                        members_list += f" ... (+{len(non_bot_members) - 3})"
+                    channels_info.append(f"• {channel.mention}: {len(non_bot_members)} пользователей\n  └ {members_list}")
+            
+            embed.add_field(
+                name="🎤 Активные голосовые каналы",
+                value="\n".join(channels_info) if channels_info else "Нет пользователей",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🎤 Активные голосовые каналы", 
+                value="Нет активных голосовых каналов",
+                inline=False
+            )
         
         embed.add_field(
-            name="🎤 Голосовой опыт", 
-            value=f"Опыт: {user_data['voice_xp']} XP\nУровень: {user_data['voice_level']}",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="📊 Общий опыт",
-            value=f"Опыт: {user_data['total_xp']} XP\nУровень: {user_data['total_level']}",
-            inline=True
-        )
-        
-        # Статистика голосового трекинга
-        voice_users = len(voice_tracking)
-        embed.add_field(
-            name="🎤 Голосовой трекинг",
-            value=f"Отслеживается пользователей: {voice_users}",
+            name="📊 Статистика трекинга",
+            value=f"**Всего пользователей:** `{total_members}`\n"
+                  f"**Отслеживается:** `{active_tracking}`\n"
+                  f"**Всего сессий:** `{len(voice_sessions)}`",
             inline=False
         )
         
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Проверка целостности данных
+        orphaned_sessions = 0
+        for user_id in list(voice_sessions.keys()):
+            session = voice_sessions[user_id]
+            guild = bot.get_guild(session['guild_id'])
+            if guild:
+                member = guild.get_member(int(user_id))
+                if not member or not member.voice:
+                    orphaned_sessions += 1
+        
+        if orphaned_sessions > 0:
+            embed.add_field(
+                name="⚠️ Проблемные сессии",
+                value=f"Найдено `{orphaned_sessions}` orphaned сессий",
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed)
         
     except Exception as e:
         await interaction.response.send_message(f"⛔ Ошибка проверки: {str(e)}", ephemeral=True)
