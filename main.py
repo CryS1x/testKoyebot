@@ -241,29 +241,35 @@ def calculate_level(xp):
 
 # Добавление опыта
 async def add_xp(user_id, xp, xp_type, guild=None):
-    user_id = int(user_id)
-    user = await get_user_data(user_id)
-    
-    old_level = user[f'{xp_type}_level']
-    
-    if xp_type == 'text':
-        user['text_xp'] = max(0, user['text_xp'] + xp)
-        user['text_level'] = calculate_level(user['text_xp'])
-    elif xp_type == 'voice':
-        user['voice_xp'] = max(0, user['voice_xp'] + xp)
-        user['voice_level'] = calculate_level(user['voice_xp'])
-    
-    user['total_xp'] = user['text_xp'] + user['voice_xp']
-    user['total_level'] = calculate_level(user['total_xp'])
-    
-    await save_user_data(user_id, user)
-    
-    # Проверка повышения уровня
-    new_level = user[f'{xp_type}_level']
-    if new_level > old_level and guild:
-        await send_level_up_notification(user_id, xp_type, old_level, new_level, guild)
-    
-    return user
+    try:
+        user_id = int(user_id)
+        user = await get_user_data(user_id)
+        
+        old_level = user[f'{xp_type}_level']
+        
+        if xp_type == 'text':
+            user['text_xp'] = max(0, user['text_xp'] + xp)
+            user['text_level'] = calculate_level(user['text_xp'])
+        elif xp_type == 'voice':
+            user['voice_xp'] = max(0, user['voice_xp'] + xp)
+            user['voice_level'] = calculate_level(user['voice_xp'])
+        
+        # Обновляем общие показатели
+        user['total_xp'] = user['text_xp'] + user['voice_xp']
+        user['total_level'] = calculate_level(user['total_xp'])
+        
+        await save_user_data(user_id, user)
+        print(f"✅ Добавлено {xp} {xp_type} XP пользователю {user_id}. Новый уровень: {user[f'{xp_type}_level']}")
+        
+        # Проверка повышения уровня
+        new_level = user[f'{xp_type}_level']
+        if new_level > old_level and guild:
+            await send_level_up_notification(user_id, xp_type, old_level, new_level, guild)
+        
+        return user
+    except Exception as e:
+        print(f"⛔ Ошибка в add_xp: {e}")
+        return None
 
 # Отправка уведомления о повышении уровня
 async def send_level_up_notification(user_id, xp_type, old_level, new_level, guild):
@@ -626,17 +632,26 @@ async def on_message(message):
     if message.author.bot or not message.guild:
         return await bot.process_commands(message)
     
+    # Игнорируем команды
+    if message.content.startswith(bot.command_prefix):
+        return await bot.process_commands(message)
+    
     user_id = str(message.author.id)
     current_time = time.time()
     
+    # Проверка кулдауна
     if user_id in cooldowns:
         if current_time - cooldowns[user_id] < CONFIG['TEXT_COOLDOWN']:
             return await bot.process_commands(message)
     
-    xp = random.randint(CONFIG['TEXT_XP_MIN'], CONFIG['TEXT_XP_MAX'])
-    await add_xp(user_id, xp, 'text', message.guild)
-    
-    cooldowns[user_id] = current_time
+    try:
+        xp = random.randint(CONFIG['TEXT_XP_MIN'], CONFIG['TEXT_XP_MAX'])
+        await add_xp(user_id, xp, 'text', message.guild)
+        print(f"💬 Сообщение от {message.author.name}: +{xp} XP")
+        
+        cooldowns[user_id] = current_time
+    except Exception as e:
+        print(f"⛔ Ошибка начисления XP за сообщение: {e}")
     
     await bot.process_commands(message)
 
@@ -648,58 +663,63 @@ async def on_voice_state_update(member, before, after):
     
     user_id = str(member.id)
     
+    # Вход в голосовой канал
     if before.channel is None and after.channel is not None:
         voice_tracking[user_id] = {
             'start_time': time.time(),
-            'guild_id': member.guild.id
+            'guild_id': member.guild.id,
+            'last_xp_time': time.time()
         }
-        await log_action(
-            member.guild,
-            "🎤 Вход в голосовой канал",
-            f"**Канал:** {after.channel.mention}",
-            COLORS['VOICE'],
-            member
-        )
+        print(f"🎤 {member.name} вошел в {after.channel.name}")
     
+    # Выход из голосового канала
     elif before.channel is not None and after.channel is None:
         if user_id in voice_tracking:
             tracking_data = voice_tracking[user_id]
-            join_time = tracking_data['start_time']
-            duration = time.time() - join_time
-            minutes = int(duration / 60)
+            duration = time.time() - tracking_data['start_time']
+            minutes = max(1, int(duration / 60))
             
-            if minutes > 0:
-                xp = minutes * CONFIG['VOICE_XP_PER_MINUTE']
-                await add_xp(user_id, xp, 'voice', member.guild)
-            
-            await log_action(
-                member.guild,
-                "🎤 Выход из голосового канала",
-                f"**Канал:** {before.channel.mention}\n**Продолжительность:** `{minutes} минут`",
-                COLORS['VOICE'],
-                member
-            )
+            xp = minutes * CONFIG['VOICE_XP_PER_MINUTE']
+            await add_xp(user_id, xp, 'voice', member.guild)
+            print(f"🎤 {member.name} вышел из {before.channel.name}: +{xp} XP за {minutes} минут")
             
             del voice_tracking[user_id]
     
+    # Смена канала
     elif before.channel is not None and after.channel is not None and before.channel != after.channel:
-        await log_action(
-            member.guild,
-            "🎤 Переход между каналами",
-            f"**Из:** {before.channel.mention}\n**В:** {after.channel.mention}",
-            COLORS['VOICE'],
-            member
-        )
+        if user_id in voice_tracking:
+            # Начисляем XP за время в предыдущем канале
+            tracking_data = voice_tracking[user_id]
+            duration = time.time() - tracking_data['start_time']
+            minutes = max(1, int(duration / 60))
+            
+            xp = minutes * CONFIG['VOICE_XP_PER_MINUTE']
+            await add_xp(user_id, xp, 'voice', member.guild)
+            print(f"🎤 {member.name} перешел между каналами: +{xp} XP")
+            
+            # Обновляем время для нового канала
+            voice_tracking[user_id] = {
+                'start_time': time.time(),
+                'guild_id': member.guild.id,
+                'last_xp_time': time.time()
+            }
 
 @tasks.loop(minutes=1)
 async def voice_xp_task():
+    current_time = time.time()
     for user_id, tracking_data in list(voice_tracking.items()):
         try:
-            guild = bot.get_guild(tracking_data['guild_id'])
-            if guild:
-                await add_xp(user_id, CONFIG['VOICE_XP_PER_MINUTE'], 'voice', guild)
+            # Начисляем XP каждую минуту
+            if current_time - tracking_data['last_xp_time'] >= 60:
+                guild = bot.get_guild(tracking_data['guild_id'])
+                if guild:
+                    await add_xp(user_id, CONFIG['VOICE_XP_PER_MINUTE'], 'voice', guild)
+                    print(f"🎤 Фоновая XP для {user_id}: +{CONFIG['VOICE_XP_PER_MINUTE']} XP")
+                    
+                    # Обновляем время последнего начисления
+                    voice_tracking[user_id]['last_xp_time'] = current_time
         except Exception as e:
-            print(f"Ошибка в voice_xp_task: {e}")
+            print(f"⛔ Ошибка в voice_xp_task: {e}")
 
 # ========== ПОЛНАЯ СИСТЕМА ЛОГИРОВАНИЯ ==========
 
@@ -1343,6 +1363,53 @@ async def top_voice_command(interaction: discord.Interaction):
     except Exception as e:
         print(f"Ошибка в команде топ_войс: {e}")
         await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
+
+@bot.tree.command(name="проверка_опыта", description="Проверить систему начисления опыта")
+async def test_xp_command(interaction: discord.Interaction):
+    """Команда для тестирования системы опыта"""
+    try:
+        # Тестируем текстовый опыт
+        test_xp = 10
+        await add_xp(interaction.user.id, test_xp, 'text', interaction.guild)
+        
+        # Получаем обновленные данные
+        user_data = await get_user_data(interaction.user.id)
+        
+        embed = discord.Embed(
+            title="🧪 Проверка системы опыта",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(
+            name="💬 Текстовый опыт",
+            value=f"Опыт: {user_data['text_xp']} XP\nУровень: {user_data['text_level']}",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎤 Голосовой опыт", 
+            value=f"Опыт: {user_data['voice_xp']} XP\nУровень: {user_data['voice_level']}",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📊 Общий опыт",
+            value=f"Опыт: {user_data['total_xp']} XP\nУровень: {user_data['total_level']}",
+            inline=True
+        )
+        
+        # Статистика голосового трекинга
+        voice_users = len(voice_tracking)
+        embed.add_field(
+            name="🎤 Голосовой трекинг",
+            value=f"Отслеживается пользователей: {voice_users}",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.response.send_message(f"⛔ Ошибка проверки: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="статистика", description="Показать подробную статистику пользователя")
 @app_commands.describe(пользователь="Выберите пользователя")
