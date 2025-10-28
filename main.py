@@ -312,13 +312,25 @@ async def send_level_up_notification(user_id, xp_type, old_level, new_level, gui
         print(f"Ошибка отправки уведомления о уровне: {e}")
 
 # Улучшенная функция получения информации из аудит-логов
-async def get_audit_log_info(guild, action, target=None):
+async def get_audit_log_info(guild, action, target=None, time_window=10):
+    """
+    Улучшенная функция для получения информации из аудит-лога
+    time_window: окно времени в секундах для поиска записей
+    """
     try:
-        async for entry in guild.audit_logs(limit=5, action=action):
+        current_time = datetime.now().astimezone()
+        
+        async for entry in guild.audit_logs(limit=10, action=action):
+            # Проверяем временное окно (записи не старше time_window секунд)
+            time_diff = (current_time - entry.created_at).total_seconds()
+            if time_diff > time_window:
+                continue
+                
             if target is None:
                 return entry.user, entry.reason or "Не указана"
             elif hasattr(entry, 'target') and entry.target and entry.target.id == target.id:
                 return entry.user, entry.reason or "Не указана"
+                
     except Exception as e:
         print(f"Ошибка при получении аудит-лога: {e}")
     
@@ -1035,7 +1047,25 @@ async def on_message_delete(message):
     content = message.content or "*Сообщение без текста*"
     attachments_info = f"\n**Вложения:** {len(message.attachments)}" if message.attachments else ""
     
-    moderator, reason = await get_audit_log_info(message.guild, discord.AuditLogAction.message_delete)
+    # Пытаемся найти точного исполнителя
+    moderator, reason, time_diff = await get_exact_moderator(
+        message.guild, 
+        discord.AuditLogAction.message_delete,
+        target=message.channel,
+        max_lookback=3  # Проверяем только 3 последние записи
+    )
+    
+    # Логируем информацию для отладки
+    print(f"🔍 Удаление сообщения: автор={message.author}, найден модератор={moderator}, разница времени={time_diff:.1f}с")
+    
+    # Если нашли модератора и это не автор сообщения
+    if moderator and moderator.id != message.author.id:
+        final_moderator = moderator
+        final_reason = reason
+    else:
+        # Если модератор не найден или это автор - считаем самоудалением
+        final_moderator = message.author
+        final_reason = "Самоудаление" + (" (модератор)" if message.author.guild_permissions.manage_messages else "")
     
     await log_action(
         message.guild,
@@ -1043,9 +1073,12 @@ async def on_message_delete(message):
         f"**Канал:** {message.channel.mention}\n**Содержимое:** {content[:500]}{attachments_info}",
         COLORS['DELETE'],
         target=message.author,
-        moderator=moderator,
-        reason=reason,
-        extra_fields={"💬 Канал": message.channel.mention}
+        moderator=final_moderator,
+        reason=final_reason,
+        extra_fields={
+            "💬 Канал": message.channel.mention,
+            "⏱️ Время поиска": f"{time_diff:.1f}с" if time_diff > 0 else "не найдено"
+        }
     )
 
 @bot.event
