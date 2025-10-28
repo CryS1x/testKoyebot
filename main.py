@@ -75,7 +75,7 @@ async def init_database():
         )
         
         async with db_pool.acquire() as conn:
-            # Таблица пользователей
+            # Таблица пользователей (ОБНОВЛЕНА)
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -85,6 +85,9 @@ async def init_database():
                     voice_level INTEGER DEFAULT 1,
                     total_xp INTEGER DEFAULT 0,
                     total_level INTEGER DEFAULT 1,
+                    prestige INTEGER DEFAULT 0,
+                    profile_text TEXT DEFAULT NULL,
+                    profile_text_updated TIMESTAMP DEFAULT NULL,
                     last_updated TIMESTAMP DEFAULT NOW()
                 )
             ''')
@@ -103,6 +106,7 @@ async def init_database():
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_total_xp ON users(total_xp DESC)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_text_xp ON users(text_xp DESC)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_voice_xp ON users(voice_xp DESC)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_prestige ON users(prestige DESC)')
             
         print("✅ База данных успешно инициализирована!")
         
@@ -124,8 +128,8 @@ async def get_user_data(user_id):
             else:
                 # Создаём нового пользователя
                 await conn.execute('''
-                    INSERT INTO users (user_id, text_xp, text_level, voice_xp, voice_level, total_xp, total_level)
-                    VALUES ($1, 0, 1, 0, 1, 0, 1)
+                    INSERT INTO users (user_id, text_xp, text_level, voice_xp, voice_level, total_xp, total_level, prestige)
+                    VALUES ($1, 0, 1, 0, 1, 0, 1, 0)
                 ''', int(user_id))
                 
                 return {
@@ -135,7 +139,10 @@ async def get_user_data(user_id):
                     'voice_xp': 0,
                     'voice_level': 1,
                     'total_xp': 0,
-                    'total_level': 1
+                    'total_level': 1,
+                    'prestige': 0,
+                    'profile_text': None,
+                    'profile_text_updated': None
                 }
     except Exception as e:
         print(f"Ошибка получения данных пользователя: {e}")
@@ -146,7 +153,10 @@ async def get_user_data(user_id):
             'voice_xp': 0,
             'voice_level': 1,
             'total_xp': 0,
-            'total_level': 1
+            'total_level': 1,
+            'prestige': 0,
+            'profile_text': None,
+            'profile_text_updated': None
         }
 
 async def save_user_data(user_id, data):
@@ -156,12 +166,25 @@ async def save_user_data(user_id, data):
             await conn.execute('''
                 UPDATE users 
                 SET text_xp = $2, text_level = $3, voice_xp = $4, voice_level = $5, 
-                    total_xp = $6, total_level = $7, last_updated = NOW()
+                    total_xp = $6, total_level = $7, prestige = $8, 
+                    profile_text = $9, profile_text_updated = $10, last_updated = NOW()
                 WHERE user_id = $1
             ''', int(user_id), data['text_xp'], data['text_level'], 
-                data['voice_xp'], data['voice_level'], data['total_xp'], data['total_level'])
+                data['voice_xp'], data['voice_level'], data['total_xp'], 
+                data['total_level'], data.get('prestige', 0),
+                data.get('profile_text'), data.get('profile_text_updated'))
     except Exception as e:
         print(f"Ошибка сохранения данных пользователя: {e}")
+
+def get_prestige_emoji(prestige_level):
+    """Получение эмодзи престижа"""
+    prestige_emojis = {
+        0: "",
+        1: "1️⃣",
+        2: "2️⃣", 
+        3: "3️⃣"
+    }
+    return prestige_emojis.get(prestige_level, "")
 
 async def get_notification_channel(guild_id):
     """Получение канала уведомлений"""
@@ -434,42 +457,59 @@ async def send_admin_alert(guild, action, moderator, details):
         print(f"⛔ Ошибка отправки тревоги: {e}")
 
 # Создание карточки уровня
-def create_level_embed(user, member):
+# Создание карточки уровня (ОБНОВЛЕНА)
+def create_level_embed(user, member, show_prestige_button=False):
     data = user
+    prestige_level = data.get('prestige', 0)
+    prestige_emoji = get_prestige_emoji(prestige_level)
     
-    if data['total_level'] >= 500:
+    # Определяем цвет и ранг с учетом престижа
+    if prestige_level >= 3:
         color = discord.Color.gold()
-        rank_emoji = "🏆"
-        rank_name = "LEGEND"
-    elif data['total_level'] >= 250:
+        rank_emoji = "👑"
+        rank_name = "GOD"
+    elif prestige_level >= 2:
         color = discord.Color.purple()
         rank_emoji = "⚡"
-        rank_name = "MASTER"
-    elif data['total_level'] >= 100:
+        rank_name = "LEGEND"
+    elif prestige_level >= 1:
         color = discord.Color.blue()
         rank_emoji = "🔥"
-        rank_name = "EXPERT"
-    elif data['total_level'] >= 50:
+        rank_name = "MASTER"
+    elif data['total_level'] >= 500:
         color = discord.Color.green()
         rank_emoji = "⭐"
+        rank_name = "EXPERT"
+    elif data['total_level'] >= 100:
+        color = discord.Color.orange()
+        rank_emoji = "🌙"
         rank_name = "ADVANCED"
     else:
         color = discord.Color.light_gray()
         rank_emoji = "🌱"
         rank_name = "BEGINNER"
     
+    # Добавляем престиж к названию ранга
+    if prestige_level > 0:
+        rank_name = f"{rank_name} {prestige_emoji}"
+    
     embed = discord.Embed(color=color, timestamp=datetime.now())
-    embed.set_author(
-        name=f"📊 Профиль {member.display_name}",
-        icon_url=member.display_avatar.url
-    )
+    
+    # Заголовок с престижем
+    title = f"📊 Профиль {member.display_name}"
+    if prestige_level > 0:
+        title = f"{prestige_emoji} {title}"
+    
+    embed.set_author(name=title, icon_url=member.display_avatar.url)
     embed.set_thumbnail(url=member.display_avatar.url)
     
+    # Основная информация с престижем
     embed.add_field(
         name=f"`{rank_emoji} Ранг: {rank_name}`",
         value=f"-# **Общий уровень:** `{data['total_level']}`\n"
               f"-# **Всего опыта:** `{data['total_xp']:,} XP`\n"
-              f"-# **Прогресс:** `{data['total_xp'] % CONFIG['XP_PER_LEVEL']}/{CONFIG['XP_PER_LEVEL']} XP`",
+              f"-# **Прогресс:** `{data['total_xp'] % CONFIG['XP_PER_LEVEL']}/{CONFIG['XP_PER_LEVEL']} XP`\n"
+              f"-# **Престиж:** `{prestige_level}/3`",
         inline=False
     )
     
@@ -487,9 +527,91 @@ def create_level_embed(user, member):
         inline=True
     )
     
+    # Добавляем кастомный текст профиля если есть
+    profile_text = data.get('profile_text')
+    if profile_text:
+        embed.add_field(
+            name="`💭 Подпись профиля`",
+            value=f"```{profile_text}```",
+            inline=False
+        )
+    
+    # Показываем кнопку престижа если достигнут максимум
+    if show_prestige_button and prestige_level < 3 and data['text_level'] >= 1000 and data['voice_level'] >= 1000:
+        embed.add_field(
+            name="`🎉 Доступен престиж!`",
+            value="Нажмите кнопку ниже чтобы получить престиж и сбросить уровни с бонусами!",
+            inline=False
+        )
+    
     embed.set_footer(text=f"by crysix | Обновлено", icon_url=bot.user.display_avatar.url)
     
     return embed
+
+async def prestige_up(user_id, guild=None):
+    """Повышение престижа пользователя"""
+    try:
+        user_data = await get_user_data(user_id)
+        current_prestige = user_data.get('prestige', 0)
+        
+        if current_prestige >= 3:
+            return False, "Достигнут максимальный уровень престижа!"
+        
+        # Проверяем условия для престижа
+        if user_data['text_level'] < 1000 or user_data['voice_level'] < 1000:
+            return False, "Для престижа нужен 1000 уровень в текстовом и голосовом чате!"
+        
+        # Сбрасываем уровни и увеличиваем престиж
+        user_data['text_xp'] = 0
+        user_data['text_level'] = 1
+        user_data['voice_xp'] = 0
+        user_data['voice_level'] = 1
+        user_data['total_xp'] = 0
+        user_data['total_level'] = 1
+        user_data['prestige'] = current_prestige + 1
+        
+        await save_user_data(user_id, user_data)
+        
+        # Отправляем уведомление о престиже
+        if guild:
+            member = guild.get_member(int(user_id))
+            if member:
+                prestige_emoji = get_prestige_emoji(user_data['prestige'])
+                embed = discord.Embed(
+                    title=f"{prestige_emoji} 🎉 НОВЫЙ ПРЕСТИЖ!",
+                    description=f"{member.mention} достиг **{user_data['prestige']}** престижа!",
+                    color=discord.Color.gold(),
+                    timestamp=datetime.now()
+                )
+                
+                embed.add_field(
+                    name="✨ Что изменилось:",
+                    value="• Уровни сброшены до 1\n"
+                          "• Опыт обнулен\n" 
+                          "• Новый значок престижа\n"
+                          "• Эксклюзивные цвета профиля\n"
+                          "• Уважение от сообщества!",
+                    inline=False
+                )
+                
+                embed.set_thumbnail(url=member.display_avatar.url)
+                embed.set_footer(text="Поздравляем с достижением! 🏆")
+                
+                notification_channel_id = await get_notification_channel(guild.id)
+                if notification_channel_id:
+                    channel = bot.get_channel(int(notification_channel_id))
+                    if channel:
+                        await channel.send(embed=embed)
+                        return True, f"Поздравляем с {user_data['prestige']} престижем!"
+                
+                if guild.system_channel:
+                    await guild.system_channel.send(embed=embed)
+        
+        return True, f"Поздравляем с {user_data['prestige']} престижем!"
+        
+    except Exception as e:
+        print(f"Ошибка при повышении престижа: {e}")
+        return False, "Произошла ошибка при получении престижа!"
 
 # Создание топа
 async def create_leaderboard_embed(guild, top_type='total'):
@@ -1477,11 +1599,49 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
 async def level_command(interaction: discord.Interaction):
     try:
         data = await get_user_data(interaction.user.id)
-        embed = create_level_embed(data, interaction.user)
-        await interaction.response.send_message(embed=embed)
+        
+        # Проверяем доступен ли престиж
+        show_prestige_button = (
+            data.get('prestige', 0) < 3 and 
+            data['text_level'] >= 1000 and 
+            data['voice_level'] >= 1000
+        )
+        
+        embed = create_level_embed(data, interaction.user, show_prestige_button=show_prestige_button)
+        
+        if show_prestige_button:
+            view = PrestigeView(interaction.user.id)
+            await interaction.response.send_message(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed)
+            
     except Exception as e:
         print(f"Ошибка в команде уровень: {e}")
         await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
+
+class PrestigeView(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+    
+    @discord.ui.button(label="🎉 Получить престиж!", style=discord.ButtonStyle.success, emoji="⭐")
+    async def prestige_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("⛔ Эта кнопка не для вас!", ephemeral=True)
+            return
+        
+        success, message = await prestige_up(self.user_id, interaction.guild)
+        
+        if success:
+            # Обновляем embed
+            user_data = await get_user_data(self.user_id)
+            embed = create_level_embed(user_data, interaction.user)
+            await interaction.response.edit_message(embed=embed, view=None)
+            
+            # Отправляем отдельное сообщение с поздравлением
+            await interaction.followup.send(f"🎉 {interaction.user.mention}, {message}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⛔ {message}", ephemeral=True)
 
 @bot.tree.command(name="профиль", description="Посмотреть профиль пользователя")
 @app_commands.describe(пользователь="Выберите пользователя")
@@ -1489,8 +1649,23 @@ async def profile_command(interaction: discord.Interaction, пользовате
     try:
         target = пользователь or interaction.user
         data = await get_user_data(target.id)
-        embed = create_level_embed(data, target)
-        await interaction.response.send_message(embed=embed)
+        
+        # Проверяем доступен ли престиж
+        show_prestige_button = (
+            data.get('prestige', 0) < 3 and 
+            data['text_level'] >= 1000 and 
+            data['voice_level'] >= 1000 and
+            target.id == interaction.user.id  # Только владелец профиля может престижиться
+        )
+        
+        embed = create_level_embed(data, target, show_prestige_button=show_prestige_button)
+        
+        if show_prestige_button:
+            view = PrestigeView(target.id)
+            await interaction.response.send_message(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed)
+            
     except Exception as e:
         print(f"Ошибка в команде профиль: {e}")
         await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
@@ -1981,6 +2156,73 @@ async def alert_command(interaction: discord.Interaction, действие: app_
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="профиль_текст", description="Установить кастомный текст в профиле (раз в месяц)")
+@app_commands.describe(текст="Текст для вашего профиля (макс. 100 символов)")
+async def profile_text_command(interaction: discord.Interaction, текст: str):
+    try:
+        if len(текст) > 100:
+            await interaction.response.send_message("⛔ Текст не может быть длиннее 100 символов!", ephemeral=True)
+            return
+        
+        user_data = await get_user_data(interaction.user.id)
+        
+        # Проверяем когда последний раз меняли текст
+        last_updated = user_data.get('profile_text_updated')
+        if last_updated:
+            last_updated_dt = last_updated.replace(tzinfo=None) if isinstance(last_updated, datetime) else last_updated
+            time_diff = datetime.now() - last_updated_dt
+            days_passed = time_diff.days
+            
+            if days_passed < 30:
+                days_left = 30 - days_passed
+                await interaction.response.send_message(
+                    f"⛔ Вы можете менять текст профиля только раз в месяц! Попробуйте через {days_left} дней.",
+                    ephemeral=True
+                )
+                return
+        
+        # Обновляем текст
+        user_data['profile_text'] = текст
+        user_data['profile_text_updated'] = datetime.now()
+        await save_user_data(interaction.user.id, user_data)
+        
+        embed = discord.Embed(
+            title="✅ Текст профиля обновлен!",
+            description=f"Ваш новый текст: ```{текст}```",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
+        )
+        embed.add_field(
+            name="ℹ️ Информация",
+            value="Текст будет отображаться в вашем профиле.\nСледующее изменение возможно через 30 дней.",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"Ошибка в команде профиль_текст: {e}")
+        await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
+        
+@bot.tree.command(name="профиль_текст_сброс", description="Сбросить текст профиля")
+async def profile_text_reset_command(interaction: discord.Interaction):
+    try:
+        user_data = await get_user_data(interaction.user.id)
+        user_data['profile_text'] = None
+        user_data['profile_text_updated'] = None
+        await save_user_data(interaction.user.id, user_data)
+        
+        embed = discord.Embed(
+            title="✅ Текст профиля сброшен!",
+            description="Текст в вашем профиле удален.",
+            color=discord.Color.green()
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"Ошибка в команде профиль_текст_сброс: {e}")
+        await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
 
 # Запуск бота
 if __name__ == "__main__":
