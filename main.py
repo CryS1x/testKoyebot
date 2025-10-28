@@ -350,6 +350,43 @@ async def find_moderator_for_role_change(guild, target_user, role=None, is_add=T
     
     return None, "Не указана"
 
+async def get_exact_moderator(guild, action, target=None, max_lookback=5):
+    """
+    Функция для точного определения модератора с минимальным временным окном
+    max_lookback: максимальное количество записей для проверки
+    """
+    try:
+        current_time = datetime.now().astimezone()
+        entries_checked = 0
+        
+        async for entry in guild.audit_logs(limit=max_lookback, action=action):
+            entries_checked += 1
+            
+            # Проверяем временное окно (только очень свежие записи)
+            time_diff = (current_time - entry.created_at).total_seconds()
+            if time_diff > 10:  # Максимум 10 секунд
+                continue
+                
+            # Для сообщений проверяем канал
+            if action == discord.AuditLogAction.message_delete:
+                if hasattr(entry.extra, 'channel') and target:
+                    if entry.extra.channel.id == target.id:
+                        return entry.user, entry.reason or "Не указана", time_diff
+                else:
+                    return entry.user, entry.reason or "Не указана", time_diff
+                    
+            # Для других действий проверяем цель
+            elif target and hasattr(entry, 'target') and entry.target:
+                if entry.target.id == target.id:
+                    return entry.user, entry.reason or "Не указана", time_diff
+            elif target is None:
+                return entry.user, entry.reason or "Не указана", time_diff
+                
+    except Exception as e:
+        print(f"Ошибка в get_exact_moderator: {e}")
+    
+    return None, "Не указана", 0
+
 async def send_admin_alert(guild, action, moderator, details):
     try:
         BOT_OWNER_ID = 852962557002252289
