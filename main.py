@@ -1,14 +1,13 @@
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import json
 import random
 import time
 from datetime import datetime, timedelta
 import os
 import asyncio
 from dotenv import load_dotenv
-import math
+import asyncpg
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -16,10 +15,11 @@ load_dotenv()
 # Конфигурация
 CONFIG = {
     'TOKEN': os.getenv('DISCORD_BOT_TOKEN'),
+    'DATABASE_URL': os.getenv('DATABASE_URL'),  # Добавьте в .env
     'MAX_LEVEL': 1000,
     'TEXT_XP_MIN': 5,
     'TEXT_XP_MAX': 10,
-    'TEXT_COOLDOWN': 30,  # секунды
+    'TEXT_COOLDOWN': 30,
     'VOICE_XP_PER_MINUTE': 5,
     'XP_PER_LEVEL': 100,
     'ADMIN_ALERT_ENABLED': True
@@ -28,17 +28,19 @@ CONFIG = {
 if not CONFIG['TOKEN']:
     raise ValueError("Токен бота не найден! Установите переменную DISCORD_BOT_TOKEN")
 
+if not CONFIG['DATABASE_URL']:
+    raise ValueError("URL базы данных не найден! Установите переменную DATABASE_URL")
+
 # Инициализация бота
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Хранилище данных
-user_data = {}
-server_settings = {}
+# Пул соединений с БД
+db_pool = None
+
+# Хранилище данных (для кэша)
 cooldowns = {}
 voice_tracking = {}
-DATA_FILE = 'userdata.json'
-SETTINGS_FILE = 'settings.json'
 
 # Цвета для эмбедов
 COLORS = {
@@ -74,21 +76,85 @@ def load_data():
         except:
             server_settings = {}
 
-# Сохранение данных
-def save_data():
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(user_data, f, indent=2, ensure_ascii=False)
+async def init_database():
+    """Инициализация подключения к БД и создание таблиц"""
+    global db_pool
+    
+    try:
+        db_pool = await asyncpg.create_pool(
+            CONFIG['DATABASE_URL'],
+            min_size=5,
+            max_size=20,
+            command_timeout=60
+        )
+        
+        async with db_pool.acquire() as conn:
+            # Таблица пользователей
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    text_xp INTEGER DEFAULT 0,
+                    text_level INTEGER DEFAULT 1,
+                    voice_xp INTEGER DEFAULT 0,
+                    voice_level INTEGER DEFAULT 1,
+                    total_xp INTEGER DEFAULT 0,
+                    total_level INTEGER DEFAULT 1,
+                    last_updated TIMESTAMP DEFAULT NOW()
+                )
+            ''')
+            
+            # Таблица настроек серверов
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS server_settings (
+                    guild_id BIGINT PRIMARY KEY,
+                    notification_channel BIGINT,
+                    log_channel BIGINT,
+                    last_updated TIMESTAMP DEFAULT NOW()
+                )
+            ''')
+            
+            # Индексы для оптимизации
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_total_xp ON users(total_xp DESC)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_text_xp ON users(text_xp DESC)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_voice_xp ON users(voice_xp DESC)')
+            
+        print("✅ База данных успешно инициализирована!")
+        
+    except Exception as e:
+        print(f"❌ Ошибка инициализации БД: {e}")
+        raise
 
-# Сохранение настроек
-def save_settings():
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(server_settings, f, indent=2, ensure_ascii=False)
-
-# Получение данных пользователя
-def get_user_data(user_id):
-    user_id = str(user_id)
-    if user_id not in user_data:
-        user_data[user_id] = {
+async def get_user_data(user_id):
+    """Получение данных пользователя из БД"""
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT * FROM users WHERE user_id = $1',
+                int(user_id)
+            )
+            
+            if row:
+                return dict(row)
+            else:
+                # Создаём нового пользователя
+                await conn.execute('''
+                    INSERT INTO users (user_id, text_xp, text_level, voice_xp, voice_level, total_xp, total_level)
+                    VALUES ($1, 0, 1, 0, 1, 0, 1)
+                ''', int(user_id))
+                
+                return {
+                    'user_id': int(user_id),
+                    'text_xp': 0,
+                    'text_level': 1,
+                    'voice_xp': 0,
+                    'voice_level': 1,
+                    'total_xp': 0,
+                    'total_level': 1
+                }
+    except Exception as e:
+        print(f"Ошибка получения данных пользователя: {e}")
+        return {
+            'user_id': int(user_id),
             'text_xp': 0,
             'text_level': 1,
             'voice_xp': 0,
@@ -96,21 +162,95 @@ def get_user_data(user_id):
             'total_xp': 0,
             'total_level': 1
         }
-    return user_data[user_id]
+
+async def save_user_data(user_id, data):
+    """Сохранение данных пользователя в БД"""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE users 
+                SET text_xp = $2, text_level = $3, voice_xp = $4, voice_level = $5, 
+                    total_xp = $6, total_level = $7, last_updated = NOW()
+                WHERE user_id = $1
+            ''', int(user_id), data['text_xp'], data['text_level'], 
+                data['voice_xp'], data['voice_level'], data['total_xp'], data['total_level'])
+    except Exception as e:
+        print(f"Ошибка сохранения данных пользователя: {e}")
 
 # Получение канала уведомлений
-def get_notification_channel(guild_id):
-    guild_id = str(guild_id)
-    if guild_id in server_settings:
-        return server_settings[guild_id].get('notification_channel')
-    return None
+async def get_notification_channel(guild_id):
+    """Получение канала уведомлений"""
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT notification_channel FROM server_settings WHERE guild_id = $1',
+                int(guild_id)
+            )
+            return row['notification_channel'] if row else None
+    except Exception as e:
+        print(f"Ошибка получения канала уведомлений: {e}")
+        return None
 
 # Получение канала логов
-def get_log_channel(guild_id):
-    guild_id = str(guild_id)
-    if guild_id in server_settings:
-        return server_settings[guild_id].get('log_channel')
-    return None
+async def get_log_channel(guild_id):
+    """Получение канала логов"""
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT log_channel FROM server_settings WHERE guild_id = $1',
+                int(guild_id)
+            )
+            return row['log_channel'] if row else None
+    except Exception as e:
+        print(f"Ошибка получения канала логов: {e}")
+        return None
+
+async def set_notification_channel(guild_id, channel_id):
+    """Установка канала уведомлений"""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO server_settings (guild_id, notification_channel, last_updated)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (guild_id) 
+                DO UPDATE SET notification_channel = $2, last_updated = NOW()
+            ''', int(guild_id), int(channel_id))
+    except Exception as e:
+        print(f"Ошибка установки канала уведомлений: {e}")
+
+async def set_log_channel(guild_id, channel_id):
+    """Установка канала логов"""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO server_settings (guild_id, log_channel, last_updated)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (guild_id) 
+                DO UPDATE SET log_channel = $2, last_updated = NOW()
+            ''', int(guild_id), int(channel_id))
+    except Exception as e:
+        print(f"Ошибка установки канала логов: {e}")
+
+async def get_leaderboard(xp_type='total', limit=10):
+    """Получение топа игроков"""
+    try:
+        field_map = {
+            'text': 'text_xp',
+            'voice': 'voice_xp',
+            'total': 'total_xp'
+        }
+        
+        field = field_map.get(xp_type, 'total_xp')
+        
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT * FROM users ORDER BY {field} DESC LIMIT $1',
+                limit
+            )
+            return [dict(row) for row in rows]
+    except Exception as e:
+        print(f"Ошибка получения топа: {e}")
+        return []
 
 # Расчет уровня по опыту
 def calculate_level(xp):
@@ -118,8 +258,8 @@ def calculate_level(xp):
 
 # Добавление опыта
 async def add_xp(user_id, xp, xp_type, guild=None):
-    user_id = str(user_id)
-    user = get_user_data(user_id)
+    user_id = int(user_id)
+    user = await get_user_data(user_id)
     
     old_level = user[f'{xp_type}_level']
     
@@ -133,7 +273,7 @@ async def add_xp(user_id, xp, xp_type, guild=None):
     user['total_xp'] = user['text_xp'] + user['voice_xp']
     user['total_level'] = calculate_level(user['total_xp'])
     
-    save_data()
+    await save_user_data(user_id, user)
     
     # Проверка повышения уровня
     new_level = user[f'{xp_type}_level']
@@ -168,15 +308,13 @@ async def send_level_up_notification(user_id, xp_type, old_level, new_level, gui
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.set_footer(text="Поздравляем! 🎊")
         
-        # Отправка в канал уведомлений
-        notification_channel_id = get_notification_channel(guild.id)
+        notification_channel_id = await get_notification_channel(guild.id)
         if notification_channel_id:
             channel = bot.get_channel(int(notification_channel_id))
             if channel:
                 await channel.send(embed=embed)
                 return
         
-        # Если канал уведомлений не установлен, отправляем в системный канал
         if guild.system_channel:
             await guild.system_channel.send(embed=embed)
             
@@ -186,10 +324,7 @@ async def send_level_up_notification(user_id, xp_type, old_level, new_level, gui
 # Улучшенная функция получения информации из аудит-логов
 async def get_audit_log_info(guild, action, target=None):
     try:
-        print(f"Поиск в аудит-логе: {action} для {target}")
         async for entry in guild.audit_logs(limit=5, action=action):
-            print(f"Найдена запись: {entry.action}, цель: {entry.target}, пользователь: {entry.user}")
-            # Простая проверка как в рабочем коде
             if target is None:
                 return entry.user, entry.reason or "Не указана"
             elif hasattr(entry, 'target') and entry.target and entry.target.id == target.id:
@@ -206,9 +341,8 @@ async def find_moderator_for_role_change(guild, target_user, role=None, is_add=T
         action = discord.AuditLogAction.member_role_update
         async for entry in guild.audit_logs(limit=5, action=action):
             if entry.target.id == target_user.id:
-                # Проверяем время (действие должно быть не старше 10 секунд)
                 time_diff = (datetime.now().astimezone() - entry.created_at).total_seconds()
-                if time_diff < 10:  # 10 секунд - разумный порог
+                if time_diff < 10:
                     return entry.user, entry.reason or "Не указана"
     except Exception as e:
         print(f"Ошибка при поиске модератора для изменения ролей: {e}")
@@ -217,12 +351,9 @@ async def find_moderator_for_role_change(guild, target_user, role=None, is_add=T
 
 async def send_admin_alert(guild, action, moderator, details):
     try:
-        # ID создателя бота - замените на ваш реальный ID
-        BOT_OWNER_ID = 852962557002252289  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ID
+        BOT_OWNER_ID = 852962557002252289
         
-        # Получаем владельца сервера
         owner = guild.owner
-        # Получаем создателя бота
         bot_owner = await bot.fetch_user(BOT_OWNER_ID)
         
         alert_embed = discord.Embed(
@@ -232,58 +363,42 @@ async def send_admin_alert(guild, action, moderator, details):
             timestamp=datetime.now()
         )
         
-        alert_embed.add_field(
-            name="⚠️ Действие",
-            value=action,
-            inline=False
-        )
-        
+        alert_embed.add_field(name="⚠️ Действие", value=action, inline=False)
         alert_embed.add_field(
             name="🛡️ Администратор",
             value=f"{moderator.mention} (`{moderator.name}` | ID: `{moderator.id}`)",
             inline=True
         )
-        
-        alert_embed.add_field(
-            name="📋 Детали",
-            value=details,
-            inline=False
-        )
-        
+        alert_embed.add_field(name="📋 Детали", value=details, inline=False)
         alert_embed.add_field(
             name="⏰ Время",
             value=f"<t:{int(datetime.now().timestamp())}:F>",
             inline=True
         )
-        
         alert_embed.set_footer(text="Рекомендуется проверить действия администратора")
         
-        # Отправляем владельцу сервера
         if owner:
             try:
                 await owner.send(embed=alert_embed)
                 print(f"✅ Тревога отправлена владельцу сервера: {owner.name}")
             except discord.Forbidden:
-                # Если нельзя отправить ЛС, попробуем отправить в системный канал
                 if guild.system_channel:
                     await guild.system_channel.send(f"{owner.mention}", embed=alert_embed)
-                    print(f"✅ Тревога отправлена в системный канал для владельца")
         
-        # Отправляем создателю бота (если это не тот же человек)
         if bot_owner and bot_owner.id != owner.id:
             try:
                 await bot_owner.send(embed=alert_embed)
                 print(f"✅ Тревога отправлена создателю бота: {bot_owner.name}")
             except discord.Forbidden:
-                print(f"❌ Не удалось отправить тревогу создателю бота: нет прав для ЛС")
+                print(f"❌ Не удалось отправить тревогу создателю бота")
         
     except Exception as e:
         print(f"❌ Ошибка отправки тревоги: {e}")
 
-# Логирование действий с защитой от rate limits
+# Логирование действий
 async def log_action(guild, action, description, color=COLORS['INFO'], target=None, moderator=None, reason=None, extra_fields=None):
     try:
-        log_channel_id = get_log_channel(guild.id)
+        log_channel_id = await get_log_channel(guild.id)
         if not log_channel_id:
             return
         
@@ -298,72 +413,39 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
             timestamp=datetime.now()
         )
         
-        # Участник (тот, с кем произошло действие)
         if target:
             embed.add_field(
-                name="👤 Участник", 
-                value=f"{target.mention} (`{target.id}`)\nИмя: `{target.name}`\nДискриминатор: `{target.discriminator}`", 
+                name="👤 Участник",
+                value=f"{target.mention} (`{target.id}`)\nИмя: `{target.name}`",
                 inline=True
             )
         
-        # Модератор (тот, кто совершил действие)
         if moderator:
             embed.add_field(
-                name="🛡️ Модератор", 
-                value=f"{moderator.mention} (`{moderator.id}`)\nИмя: `{moderator.name}`", 
-                inline=True
-            )
-        # Для действий, где есть участник но нет модератора (голосовые каналы, редактирование сообщений и т.д.)
-        elif target:
-            embed.add_field(
-                name="🛡️ Взаимодействовал", 
-                value=f"{target.mention} (`{target.id}`)\nИмя: `{target.name}`", 
+                name="🛡️ Модератор",
+                value=f"{moderator.mention} (`{moderator.id}`)\nИмя: `{moderator.name}`",
                 inline=True
             )
         
-        # Причина
         if reason and reason != "Не указана":
             embed.add_field(name="📋 Причина", value=reason, inline=False)
         
-        # Дополнительные поля
         if extra_fields:
             for field_name, field_value in extra_fields.items():
                 embed.add_field(name=field_name, value=field_value, inline=False)
         
         embed.set_footer(text=f"ID: {target.id if target else 'Система'}")
         
-        # Задержка для избежания rate limits
         await asyncio.sleep(0.5)
+        await channel.send(embed=embed)
         
-        # Пытаемся отправить сообщение
-        try:
-            await channel.send(embed=embed)
-        except discord.Forbidden:
-            # Если нет прав для отправки в канал логов
-            if CONFIG['ADMIN_ALERT_ENABLED'] and moderator:
-                await send_admin_alert(
-                    guild,
-                    "Попытка отправить лог в канал без прав",
-                    moderator,
-                    f"Бот не имеет прав для отправки сообщений в канал логов {channel.mention}"
-                )
-            return
-        except discord.HTTPException as e:
-            if e.status == 429:  # Rate limit
-                retry_after = e.retry_after
-                print(f"Rate limit hit, retrying in {retry_after} seconds")
-                await asyncio.sleep(retry_after)
-                await log_action(guild, action, description, color, target, moderator, reason, extra_fields)
-            else:
-                print(f"Ошибка логирования: {e}")
     except Exception as e:
-            print(f"Ошибка логирования: {e}")
+        print(f"Ошибка логирования: {e}")
 
 # Создание современной карточки уровня
 def create_level_embed(user, member):
-    data = get_user_data(user.id)
+    data = user
     
-    # Определение цвета по общему уровню
     if data['total_level'] >= 500:
         color = discord.Color.gold()
         rank_emoji = "🏆"
@@ -385,28 +467,21 @@ def create_level_embed(user, member):
         rank_emoji = "🌱"
         rank_name = "BEGINNER"
     
-    embed = discord.Embed(
-        color=color,
-        timestamp=datetime.now()
-    )
-    
+    embed = discord.Embed(color=color, timestamp=datetime.now())
     embed.set_author(
         name=f"📊 Профиль {member.display_name}",
-        icon_url=user.display_avatar.url
+        icon_url=member.display_avatar.url
     )
+    embed.set_thumbnail(url=member.display_avatar.url)
     
-    embed.set_thumbnail(url=user.display_avatar.url)
-    
-    # Основная статистика
     embed.add_field(
         name=f"`{rank_emoji} Ранг: {rank_name}`",
         value=f"-# **Общий уровень:** `{data['total_level']}`\n"
               f"-# **Всего опыта:** `{data['total_xp']:,} XP`\n"
-              f"-# **Прогресс до след. ур.:** `{data['total_xp'] % CONFIG['XP_PER_LEVEL']}/{CONFIG['XP_PER_LEVEL']} XP`",
+              f"-# **Прогресс:** `{data['total_xp'] % CONFIG['XP_PER_LEVEL']}/{CONFIG['XP_PER_LEVEL']} XP`",
         inline=False
     )
     
-    # Детальная статистика
     embed.add_field(
         name="`💬 Текстовый чат`",
         value=f"-# **Уровень:** `{data['text_level']}`\n"
@@ -421,63 +496,32 @@ def create_level_embed(user, member):
         inline=True
     )
     
-    # Достижения
-    achievements = []
-    if data['text_level'] >= 100:
-        achievements.append("📚 Мастер слов")
-    if data['voice_level'] >= 100:
-        achievements.append("🎧 Голосовой ветеран")
-    if data['total_level'] >= 500:
-        achievements.append("🏅 Абсолютный чемпион")
-    if data['text_xp'] > 10000:
-        achievements.append("💬 Активный писатель")
-    if data['voice_xp'] > 10000:
-        achievements.append("🎤 Постоянный спикер")
-    
-    if achievements:
-        embed.add_field(
-            name="🏅 Достижения",
-            value=" • ".join(achievements[:3]),
-            inline=False
-        )
-    
-    embed.set_footer(
-        text=f"by crysix | Обновлено",
-        icon_url=bot.user.display_avatar.url
-    )
+    embed.set_footer(text=f"by crysix | Обновлено", icon_url=bot.user.display_avatar.url)
     
     return embed
 
 # Создание топа
-def create_leaderboard_embed(guild, top_type='total'):
+async def create_leaderboard_embed(guild, top_type='total'):
     if top_type == 'text':
-        sorted_users = sorted(user_data.items(), key=lambda x: x[1]['text_xp'], reverse=True)[:10]
         title = "💬 Топ-10 по текстовому чату"
-        emoji = "💬"
         field = 'text'
     elif top_type == 'voice':
-        sorted_users = sorted(user_data.items(), key=lambda x: x[1]['voice_xp'], reverse=True)[:10]
         title = "🎤 Топ-10 по голосовому чату"
-        emoji = "🎤"
         field = 'voice'
     else:
-        sorted_users = sorted(user_data.items(), key=lambda x: x[1]['total_xp'], reverse=True)[:10]
         title = "⭐ Топ-10 общий рейтинг"
-        emoji = "⭐"
         field = 'total'
     
-    embed = discord.Embed(
-        title=title,
-        color=discord.Color.gold(),
-        timestamp=datetime.now()
-    )
+    sorted_users = await get_leaderboard(top_type, 10)
+    
+    embed = discord.Embed(title=title, color=discord.Color.gold(), timestamp=datetime.now())
     
     medals = ["🥇", "🥈", "🥉"]
     description = ""
     
-    for idx, (user_id, data) in enumerate(sorted_users):
+    for idx, data in enumerate(sorted_users):
         try:
-            member = guild.get_member(int(user_id))
+            member = guild.get_member(int(data['user_id']))
             if not member:
                 continue
             
@@ -495,10 +539,7 @@ def create_leaderboard_embed(guild, top_type='total'):
         description = "*Пока нет данных*"
     
     embed.description = description
-    embed.set_footer(
-        text=f"Обновлено",
-        icon_url=bot.user.display_avatar.url
-    )
+    embed.set_footer(text=f"Обновлено", icon_url=bot.user.display_avatar.url)
     
     return embed
 
@@ -635,15 +676,12 @@ def create_user_stats_embed(member):
 async def on_ready():
     print(f'✅ Бот {bot.user.name} запущен!')
     
-    # Проверяем права на серверах
+    await init_database()
+    
     for guild in bot.guilds:
         perms = guild.me.guild_permissions
         if not perms.view_audit_log:
             print(f'⚠️ Внимание: Бот не имеет прав на просмотр аудит-логов на сервере {guild.name}')
-        if not perms.administrator:
-            print(f'ℹ️ Бот не имеет прав администратора на сервере {guild.name}')
-    
-    load_data()
     
     try:
         synced = await bot.tree.sync()
@@ -662,12 +700,10 @@ async def on_message(message):
     user_id = str(message.author.id)
     current_time = time.time()
     
-    # Проверка кулдауна
     if user_id in cooldowns:
         if current_time - cooldowns[user_id] < CONFIG['TEXT_COOLDOWN']:
             return await bot.process_commands(message)
     
-    # Добавление опыта
     xp = random.randint(CONFIG['TEXT_XP_MIN'], CONFIG['TEXT_XP_MAX'])
     await add_xp(user_id, xp, 'text', message.guild)
     
@@ -683,13 +719,11 @@ async def on_voice_state_update(member, before, after):
     
     user_id = str(member.id)
     
-    # Пользователь зашел в голосовой канал
     if before.channel is None and after.channel is not None:
         voice_tracking[user_id] = {
             'start_time': time.time(),
             'guild_id': member.guild.id
         }
-        
         await log_action(
             member.guild,
             "🎤 Вход в голосовой канал",
@@ -698,7 +732,6 @@ async def on_voice_state_update(member, before, after):
             member
         )
     
-    # Пользователь вышел из голосового канала
     elif before.channel is not None and after.channel is None:
         if user_id in voice_tracking:
             tracking_data = voice_tracking[user_id]
@@ -719,18 +752,7 @@ async def on_voice_state_update(member, before, after):
             )
             
             del voice_tracking[user_id]
-    
-    # Пользователь перешел между каналами
-    elif before.channel is not None and after.channel is not None and before.channel != after.channel:
-        await log_action(
-            member.guild,
-            "🎤 Переход между каналами",
-            f"**Из:** {before.channel.mention}\n**В:** {after.channel.mention}",
-            COLORS['VOICE'],
-            member
-        )
 
-# Периодическое начисление опыта в голосовых каналах
 @tasks.loop(minutes=1)
 async def voice_xp_task():
     current_time = time.time()
@@ -741,7 +763,6 @@ async def voice_xp_task():
                 await add_xp(user_id, CONFIG['VOICE_XP_PER_MINUTE'], 'voice', guild)
         except Exception as e:
             print(f"Ошибка в voice_xp_task: {e}")
-            continue
 
 # ========== ПОЛНАЯ СИСТЕМА ЛОГИРОВАНИЯ ==========
 
@@ -1391,11 +1412,12 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
 @bot.tree.command(name="уровень", description="Показать вашу карточку с уровнем")
 async def level_command(interaction: discord.Interaction):
     try:
-        embed = create_level_embed(interaction.user, interaction.user)
+        data = await get_user_data(interaction.user.id)
+        embed = create_level_embed(data, interaction.user)
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде уровень: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
+        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="профиль", description="Посмотреть профиль пользователя")
 @app_commands.describe(пользователь="Выберите пользователя")
@@ -1426,14 +1448,14 @@ async def top_voice_command(interaction: discord.Interaction):
         print(f"Ошибка в команде топ_войс: {e}")
         await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
 
-@bot.tree.command(name="топ", description="Топ-10 игроков общий рейтинг")
-async def top_total_command(interaction: discord.Interaction):
+@bot.tree.command(name="топ", description="Топ-10 игроков")
+async def top_command(interaction: discord.Interaction):
     try:
-        embed = create_leaderboard_embed(interaction.guild, 'total')
+        embed = await create_leaderboard_embed(interaction.guild, 'total')
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде топ: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка при выполнении команды", ephemeral=True)
+        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="статистика", description="Показать подробную статистику пользователя")
 @app_commands.describe(пользователь="Выберите пользователя")
@@ -1661,19 +1683,14 @@ async def clear_command(
     except Exception as e:
         await interaction.followup.send(f"❌ Ошибка при очистке: {str(e)}", ephemeral=True)
 
-@bot.tree.command(name="установить_канал", description="Установить канал для уведомлений о повышении уровня (только для админов)")
+@bot.tree.command(name="установить_канал", description="Установить канал для уведомлений")
 @app_commands.describe(канал="Выберите текстовый канал")
 async def set_channel_command(interaction: discord.Interaction, канал: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
+        await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
         return
     
-    guild_id = str(interaction.guild.id)
-    if guild_id not in server_settings:
-        server_settings[guild_id] = {}
-    
-    server_settings[guild_id]['notification_channel'] = str(канал.id)
-    save_settings()
+    await set_notification_channel(interaction.guild.id, канал.id)
     
     embed = discord.Embed(
         description=f"✅ Канал уведомлений установлен: {канал.mention}",
@@ -1681,26 +1698,21 @@ async def set_channel_command(interaction: discord.Interaction, канал: disc
     )
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="установить_логи", description="Установить канал для логирования действий (только для админов)")
-@app_commands.describe(канал="Выберите текстовый канал для логов")
+@bot.tree.command(name="установить_логи", description="Установить канал для логов")
+@app_commands.describe(канал="Выберите текстовый канал")
 async def set_logs_command(interaction: discord.Interaction, канал: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
+        await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
         return
     
-    guild_id = str(interaction.guild.id)
-    if guild_id not in server_settings:
-        server_settings[guild_id] = {}
-    
-    server_settings[guild_id]['log_channel'] = str(канал.id)
-    save_settings()
+    await set_log_channel(interaction.guild.id, канал.id)
     
     embed = discord.Embed(
         description=f"✅ Канал логов установлен: {канал.mention}",
         color=discord.Color.green()
     )
     await interaction.response.send_message(embed=embed)
-
+    
 @bot.tree.command(name="дать_уровень", description="Выдать уровень пользователю (только для админов)")
 @app_commands.describe(
     пользователь="Выберите пользователя",
