@@ -106,7 +106,7 @@ async def init_database():
         print("✅ База данных успешно инициализирована!")
         
     except Exception as e:
-        print(f"❌ Ошибка инициализации БД: {e}")
+        print(f"⛔ Ошибка инициализации БД: {e}")
         raise
 
 async def get_user_data(user_id):
@@ -347,7 +347,7 @@ async def send_admin_alert(guild, action, moderator, details):
         
         alert_embed.add_field(name="⚠️ Действие", value=action, inline=False)
         alert_embed.add_field(
-            name="🛡️ Администратор",
+            name="🤡 Уебан который тронул логи!",
             value=f"{moderator.mention} (`{moderator.name}` | ID: `{moderator.id}`)",
             inline=True
         )
@@ -357,7 +357,7 @@ async def send_admin_alert(guild, action, moderator, details):
             value=f"<t:{int(datetime.now().timestamp())}:F>",
             inline=True
         )
-        alert_embed.set_footer(text="Рекомендуется проверить действия администратора")
+        alert_embed.set_footer(text="Рекомендуется проверить действия администратора И ВЫЕБАТЬ ЕГО ЗА ЭТО!")
         
         if owner:
             try:
@@ -372,10 +372,10 @@ async def send_admin_alert(guild, action, moderator, details):
                 await bot_owner.send(embed=alert_embed)
                 print(f"✅ Тревога отправлена создателю бота: {bot_owner.name}")
             except discord.Forbidden:
-                print(f"❌ Не удалось отправить тревогу создателю бота")
+                print(f"⛔ Не удалось отправить тревогу создателю бота")
         
     except Exception as e:
-        print(f"❌ Ошибка отправки тревоги: {e}")
+        print(f"⛔ Ошибка отправки тревоги: {e}")
 
 # Создание карточки уровня
 def create_level_embed(user, member):
@@ -509,7 +509,7 @@ async def create_user_stats_embed(member):
         value=f"**Имя:** `{member.name}`\n"
               f"**ID:** `{member.id}`\n"
               f"**Статус:** {status_text}\n"
-              f"**Бот:** {'✅' if member.bot else '❌'}\n"
+              f"**Бот:** {'✅' if member.bot else '⛔'}\n"
               f"**Отображаемое имя:** `{member.display_name}`",
         inline=False
     )
@@ -535,7 +535,7 @@ async def create_user_stats_embed(member):
         inline=False
     )
     
-    activity_text = "❌ Не активно"
+    activity_text = "⛔ Не активно"
     if member.activity:
         activity = member.activity
         try:
@@ -553,7 +553,7 @@ async def create_user_stats_embed(member):
             activity_text = "📱 Активность"
     
     embed.add_field(
-        name="🎯 Активность",
+        name="📊 Активность",
         value=activity_text,
         inline=True
     )
@@ -566,7 +566,7 @@ async def create_user_stats_embed(member):
     level_text += f"**Всего опыта:** `{user_level_data['total_xp']:,} XP`"
     
     embed.add_field(
-        name="📊 Уровни",
+        name="📈 Уровни",
         value=level_text,
         inline=True
     )
@@ -760,7 +760,7 @@ async def on_member_update(before, after):
             moderator, reason = await find_moderator_for_role_change(after.guild, after, role, is_add=True)
             await log_action(
                 after.guild,
-                "➕ Роль выдана",
+                "✅ Роль выдана",
                 f"**Роль:** {role.mention}",
                 COLORS['SUCCESS'],
                 target=after,
@@ -773,7 +773,7 @@ async def on_member_update(before, after):
             moderator, reason = await find_moderator_for_role_change(after.guild, after, role, is_add=False)
             await log_action(
                 after.guild,
-                "➖ Роль изъята",
+                "⛔ Роль изъята",
                 f"**Роль:** {role.mention}",
                 COLORS['ERROR'],
                 target=after,
@@ -1020,7 +1020,7 @@ async def on_guild_channel_create(channel):
     
     await log_action(
         channel.guild,
-        "➕ Создание канала",
+        "✅ Создание канала",
         f"**Тип:** {channel_type}\n**Название:** {channel.mention}",
         COLORS['CREATE'],
         moderator=moderator,
@@ -1035,7 +1035,7 @@ async def on_guild_channel_delete(channel):
     
     await log_action(
         channel.guild,
-        "➖ Удаление канала",
+        "⛔ Удаление канала",
         f"**Тип:** {channel_type}\n**Название:** `{channel.name}`",
         COLORS['DELETE'],
         moderator=moderator,
@@ -1089,7 +1089,7 @@ async def on_guild_role_create(role):
     
     await log_action(
         role.guild,
-        "➕ Создание роли",
+        "✅ Создание роли",
         f"**Роль:** {role.mention}\n**Права:** {perms_text}",
         COLORS['CREATE'],
         moderator=moderator,
@@ -1103,7 +1103,7 @@ async def on_guild_role_delete(role):
     
     await log_action(
         role.guild,
-        "➖ Удаление роли",
+        "⛔ Удаление роли",
         f"**Роль:** `{role.name}`\n**ID:** `{role.id}`",
         COLORS['DELETE'],
         moderator=moderator,
@@ -1128,7 +1128,7 @@ async def on_guild_role_update(before, after):
         changed_perms = []
         for perm, value in after.permissions:
             if getattr(before.permissions, perm) != value:
-                changed_perms.append(f"{'✅' if value else '❌'} {perm}")
+                changed_perms.append(f"{'✅' if value else '⛔'} {perm}")
         
         if changed_perms:
             changes.append("**Права:**\n" + "\n".join(changed_perms[:5]))
@@ -1266,15 +1266,15 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
         
         if target:
             embed.add_field(
-                name="👤 Участник",
-                value=f"{target.mention} (`{target.id}`)\nИмя: `{target.name}`",
+                name="🎯 Объект действия",
+                value=f"```{target.mention} (ID: {target.id})\nИмя: {target.name}```",
                 inline=True
             )
         
         if moderator:
             embed.add_field(
-                name="🛡️ Модератор",
-                value=f"{moderator.mention} (`{moderator.id}`)\nИмя: `{moderator.name}`",
+                name="👑 Исполнитель",
+                value=f"```{moderator.mention} (ID: {moderator.id})\nИмя: {moderator.name}```", 
                 inline=True
             )
         
@@ -1285,7 +1285,7 @@ async def log_action(guild, action, description, color=COLORS['INFO'], target=No
             for field_name, field_value in extra_fields.items():
                 embed.add_field(name=field_name, value=field_value, inline=False)
         
-        embed.set_footer(text=f"ID: {target.id if target else 'Система'}")
+        embed.set_footer(text=f"ID: {target.id if target else 'DEMON'}")
         
         await asyncio.sleep(0.5)
         await channel.send(embed=embed)
@@ -1303,7 +1303,7 @@ async def level_command(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде уровень: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
+        await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="профиль", description="Посмотреть профиль пользователя")
 @app_commands.describe(пользователь="Выберите пользователя")
@@ -1315,7 +1315,7 @@ async def profile_command(interaction: discord.Interaction, пользовате
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде профиль: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
+        await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="топ", description="Топ-10 игроков общий рейтинг")
 async def top_command(interaction: discord.Interaction):
@@ -1324,7 +1324,7 @@ async def top_command(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде топ: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
+        await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="топ_текст", description="Топ-10 игроков по текстовому чату")
 async def top_text_command(interaction: discord.Interaction):
@@ -1333,7 +1333,7 @@ async def top_text_command(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде топ_текст: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
+        await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="топ_войс", description="Топ-10 игроков по голосовому чату")
 async def top_voice_command(interaction: discord.Interaction):
@@ -1342,13 +1342,13 @@ async def top_voice_command(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде топ_войс: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
+        await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="статистика", description="Показать подробную статистику пользователя")
 @app_commands.describe(пользователь="Выберите пользователя")
 async def stats_command(interaction: discord.Interaction, пользователь: discord.Member = None):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав администратора!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав администратора!", ephemeral=True)
         return
     
     try:
@@ -1357,7 +1357,7 @@ async def stats_command(interaction: discord.Interaction, пользовател
         await interaction.response.send_message(embed=embed)
     except Exception as e:
         print(f"Ошибка в команде статистика: {e}")
-        await interaction.response.send_message("❌ Произошла ошибка", ephemeral=True)
+        await interaction.response.send_message("⛔ Произошла ошибка", ephemeral=True)
 
 @bot.tree.command(name="бан", description="Забанить пользователя")
 @app_commands.describe(
@@ -1377,15 +1377,15 @@ async def ban_command(
     удалить_сообщения: app_commands.Choice[str] = None
 ):
     if not interaction.user.guild_permissions.ban_members:
-        await interaction.response.send_message("❌ У вас нет прав для бана!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав для бана!", ephemeral=True)
         return
     
     if пользователь == interaction.user:
-        await interaction.response.send_message("❌ Вы не можете забанить себя!", ephemeral=True)
+        await interaction.response.send_message("⛔ Вы не можете забанить себя!", ephemeral=True)
         return
     
     if пользователь == bot.user:
-        await interaction.response.send_message("❌ Я не могу забанить себя!", ephemeral=True)
+        await interaction.response.send_message("⛔ Я не могу забанить себя!", ephemeral=True)
         return
     
     try:
@@ -1398,8 +1398,8 @@ async def ban_command(
             color=COLORS['BAN'],
             timestamp=datetime.now()
         )
-        embed.add_field(name="👤 Пользователь", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
-        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="🎯 Объект действия", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
+        embed.add_field(name="👑 Исполнитель", value=interaction.user.mention, inline=True)
         embed.add_field(name="📋 Причина", value=причина, inline=False)
         if delete_days > 0:
             embed.add_field(name="🗑️ Удалено сообщений", value=f"За последние {delete_days} дней", inline=True)
@@ -1407,7 +1407,7 @@ async def ban_command(
         await interaction.response.send_message(embed=embed)
         
     except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка при бане: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f"⛔ Ошибка при бане: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="кик", description="Кикнуть пользователя")
 @app_commands.describe(
@@ -1420,15 +1420,15 @@ async def kick_command(
     причина: str = "Не указана"
 ):
     if not interaction.user.guild_permissions.kick_members:
-        await interaction.response.send_message("❌ У вас нет прав для кика!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав для кика!", ephemeral=True)
         return
     
     if пользователь == interaction.user:
-        await interaction.response.send_message("❌ Вы не можете кикнуть себя!", ephemeral=True)
+        await interaction.response.send_message("⛔ Вы не можете кикнуть себя!", ephemeral=True)
         return
     
     if пользователь == bot.user:
-        await interaction.response.send_message("❌ Я не могу кикнуть себя!", ephemeral=True)
+        await interaction.response.send_message("⛔ Я не могу кикнуть себя!", ephemeral=True)
         return
     
     try:
@@ -1439,14 +1439,14 @@ async def kick_command(
             color=COLORS['KICK'],
             timestamp=datetime.now()
         )
-        embed.add_field(name="👤 Пользователь", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
-        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="🎯 Объект действия", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
+        embed.add_field(name="👑 Исполнитель", value=interaction.user.mention, inline=True)
         embed.add_field(name="📋 Причина", value=причина, inline=False)
         
         await interaction.response.send_message(embed=embed)
         
     except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка при кике: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f"⛔ Ошибка при кике: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="таймаут", description="Выдать таймаут пользователю")
 @app_commands.describe(
@@ -1461,15 +1461,15 @@ async def timeout_command(
     причина: str = "Не указана"
 ):
     if not interaction.user.guild_permissions.moderate_members:
-        await interaction.response.send_message("❌ У вас нет прав для выдачи таймаута!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав для выдачи таймаута!", ephemeral=True)
         return
     
     if пользователь == interaction.user:
-        await interaction.response.send_message("❌ Вы не можете выдать таймаут себе!", ephemeral=True)
+        await interaction.response.send_message("⛔ Вы не можете выдать таймаут себе!", ephemeral=True)
         return
     
     if пользователь == bot.user:
-        await interaction.response.send_message("❌ Я не могу выдать таймаут себе!", ephemeral=True)
+        await interaction.response.send_message("⛔ Я не могу выдать таймаут себе!", ephemeral=True)
         return
     
     try:
@@ -1481,15 +1481,15 @@ async def timeout_command(
             color=COLORS['WARNING'],
             timestamp=datetime.now()
         )
-        embed.add_field(name="👤 Пользователь", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
-        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="🎯 Объект действия", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
+        embed.add_field(name="👑 Исполнитель", value=interaction.user.mention, inline=True)
         embed.add_field(name="⏱️ Длительность", value=f"{длительность} минут", inline=True)
         embed.add_field(name="📋 Причина", value=причина, inline=False)
         
         await interaction.response.send_message(embed=embed)
         
     except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка при выдаче таймаута: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f"⛔ Ошибка при выдаче таймаута: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="размут", description="Снять таймаут с пользователя")
 @app_commands.describe(
@@ -1502,7 +1502,7 @@ async def unmute_command(
     причина: str = "Не указана"
 ):
     if not interaction.user.guild_permissions.moderate_members:
-        await interaction.response.send_message("❌ У вас нет прав для снятия таймаута!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав для снятия таймаута!", ephemeral=True)
         return
     
     try:
@@ -1513,14 +1513,14 @@ async def unmute_command(
             color=COLORS['SUCCESS'],
             timestamp=datetime.now()
         )
-        embed.add_field(name="👤 Пользователь", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
-        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="🎯 Объект действия", value=f"{пользователь.mention} (`{пользователь.id}`)", inline=True)
+        embed.add_field(name="👑 Исполнитель", value=interaction.user.mention, inline=True)
         embed.add_field(name="📋 Причина", value=причина, inline=False)
         
         await interaction.response.send_message(embed=embed)
         
     except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка при снятии таймаута: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f"⛔ Ошибка при снятии таймаута: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="очистить", description="Очистить сообщения в канале")
 @app_commands.describe(
@@ -1533,11 +1533,11 @@ async def clear_command(
     пользователь: discord.Member = None
 ):
     if not interaction.user.guild_permissions.manage_messages:
-        await interaction.response.send_message("❌ У вас нет прав для управления сообщениями!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав для управления сообщениями!", ephemeral=True)
         return
     
     if количество < 1 or количество > 100:
-        await interaction.response.send_message("❌ Количество должно быть от 1 до 100!", ephemeral=True)
+        await interaction.response.send_message("⛔ Количество должно быть от 1 до 100!", ephemeral=True)
         return
     
     await interaction.response.defer(ephemeral=True)
@@ -1560,7 +1560,7 @@ async def clear_command(
         if пользователь:
             embed.add_field(name="👤 Фильтр", value=f"Только от {пользователь.mention}", inline=True)
         
-        embed.add_field(name="🛡️ Модератор", value=interaction.user.mention, inline=True)
+        embed.add_field(name="👑 Исполнитель", value=interaction.user.mention, inline=True)
         
         await interaction.followup.send(embed=embed, ephemeral=True)
         
@@ -1568,13 +1568,13 @@ async def clear_command(
         await interaction.delete_original_response()
         
     except Exception as e:
-        await interaction.followup.send(f"❌ Ошибка при очистке: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"⛔ Ошибка при очистке: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="установить_канал", description="Установить канал для уведомлений")
 @app_commands.describe(канал="Выберите текстовый канал")
 async def set_channel_command(interaction: discord.Interaction, канал: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав!", ephemeral=True)
         return
     
     await set_notification_channel(interaction.guild.id, канал.id)
@@ -1589,7 +1589,7 @@ async def set_channel_command(interaction: discord.Interaction, канал: disc
 @app_commands.describe(канал="Выберите текстовый канал")
 async def set_logs_command(interaction: discord.Interaction, канал: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав!", ephemeral=True)
         return
     
     await set_log_channel(interaction.guild.id, канал.id)
@@ -1617,11 +1617,11 @@ async def give_level_command(
     количество: int
 ):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
+        await interaction.response.send_message("⛔ У вас нет прав!", ephemeral=True)
         return
     
     if количество < 1:
-        await interaction.response.send_message("❌ Количество должно быть положительным!", ephemeral=True)
+        await interaction.response.send_message("⛔ Количество должно быть положительным!", ephemeral=True)
         return
     
     await add_xp(пользователь.id, количество, тип.value, interaction.guild)
@@ -1649,13 +1649,13 @@ async def logs_info_command(interaction: discord.Interaction):
     
     embed.add_field(
         name="🔔 Канал уведомлений",
-        value=f"<#{notification_channel}>" if notification_channel else "❌ Не установлен",
+        value=f"<#{notification_channel}>" if notification_channel else "⛔ Не установлен",
         inline=True
     )
     
     embed.add_field(
         name="📝 Канал логов",
-        value=f"<#{log_channel}>" if log_channel else "❌ Не установлен",
+        value=f"<#{log_channel}>" if log_channel else "⛔ Не установлен",
         inline=True
     )
     
@@ -1674,7 +1674,7 @@ async def alert_command(interaction: discord.Interaction, действие: app_
     
     # Проверяем права: владелец сервера ИЛИ создатель бота
     if interaction.user.id != interaction.guild.owner_id and interaction.user.id != BOT_OWNER_ID:
-        await interaction.response.send_message("❌ Эта команда доступна только владельцу сервера или создателю бота!", ephemeral=True)
+        await interaction.response.send_message("⛔ Эта команда доступна только владельцу сервера или создателю бота!", ephemeral=True)
         return
     
     if действие.value == "enable":
