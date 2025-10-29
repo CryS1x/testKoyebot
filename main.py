@@ -2506,6 +2506,9 @@ async def invite_voice_command(
             await interaction.response.send_message("⛔ Нельзя приглашать ботов!", ephemeral=True)
             return
         
+        # ВАЖНО: Сразу отвечаем на interaction чтобы избежать timeout
+        await interaction.response.defer(ephemeral=True)
+        
         # Создаем прямую ссылку на голосовой канал
         voice_link = f"https://discord.com/channels/{interaction.guild.id}/{канал.id}"
         
@@ -2543,9 +2546,10 @@ async def invite_voice_command(
                 inline=False
             )
         
+        # Добавляем ссылку БЕЗ маскировки - Discord сам сделает её кликабельной
         invite_embed.add_field(
-            name="🔗 Присоединиться",
-            value=f"[Нажми сюда чтобы подключиться]({voice_link})",
+            name="🔗 Ссылка для подключения",
+            value=voice_link,
             inline=False
         )
         
@@ -2558,6 +2562,80 @@ async def invite_voice_command(
         # Пытаемся отправить ЛС пользователю
         try:
             await пользователь.send(embed=invite_embed)
+            
+            # Подтверждение отправителю
+            success_embed = discord.Embed(
+                title="✅ Приглашение отправлено!",
+                description=f"Пользователь {пользователь.mention} получил ваше приглашение в ЛС",
+                color=discord.Color.green()
+            )
+            
+            success_embed.add_field(
+                name="📍 Канал",
+                value=f"{канал.mention}",
+                inline=True
+            )
+            
+            if сообщение:
+                success_embed.add_field(
+                    name="💬 Ваше сообщение",
+                    value=f"```{сообщение[:100]}{'...' if len(сообщение) > 100 else ''}```",
+                    inline=False
+                )
+            
+            # Используем followup вместо response
+            await interaction.followup.send(embed=success_embed, ephemeral=True)
+            
+            # Логируем действие
+            await log_action(
+                interaction.guild,
+                "🎤 Приглашение в голосовой канал",
+                f"**Пользователь:** {пользователь.mention}\n"
+                f"**Канал:** {канал.mention}\n"
+                f"**Сообщение:** {сообщение[:100] if сообщение else 'Без текста'}",
+                COLORS['VOICE'],
+                target=пользователь,
+                moderator=interaction.user,
+                extra_fields={
+                    "🎤 Канал": канал.mention,
+                    "💬 Текст": сообщение[:200] if сообщение else "Стандартное приглашение"
+                }
+            )
+            
+        except discord.Forbidden:
+            # Если у пользователя закрыты ЛС
+            error_embed = discord.Embed(
+                title="⛔ Не удалось отправить приглашение",
+                description=f"У пользователя {пользователь.mention} закрыты личные сообщения",
+                color=discord.Color.red()
+            )
+            
+            error_embed.add_field(
+                name="💡 Совет",
+                value="Попробуйте упомянуть пользователя в текстовом канале или позовите его голосом!",
+                inline=False
+            )
+            
+            # Используем followup
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+            
+    except Exception as e:
+        print(f"Ошибка в команде пригласить: {e}")
+        try:
+            # Пытаемся отправить ошибку через followup
+            await interaction.followup.send(
+                f"⛔ Произошла ошибка при отправке приглашения: {str(e)}", 
+                ephemeral=True
+            )
+        except:
+            # Если followup не работает, пробуем response
+            try:
+                await interaction.response.send_message(
+                    f"⛔ Произошла ошибка при отправке приглашения: {str(e)}", 
+                    ephemeral=True
+                )
+            except:
+                pass
             
             # Подтверждение отправителю
             success_embed = discord.Embed(
