@@ -2481,6 +2481,108 @@ async def user_info_command(interaction: discord.Interaction, пользоват
         print(f"Ошибка в команде инфо_юзер: {e}")
         await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
 
+@bot.tree.command(name="инфо_юзер", description="Детальная информация о пользователе (только для БОГОВ!)")
+@app_commands.describe(пользователь="Пользователь для проверки")
+async def user_info_command(interaction: discord.Interaction, пользователь: discord.Member):
+    """Детальная информация о пользователе для администраторов"""
+    
+    # ID создателя бота и владельца сервера
+    BOT_OWNER_ID = 852962557002252289
+    SERVER_OWNER_ID = interaction.guild.owner_id
+    
+    # Проверяем права: создатель бота ИЛИ владелец сервера
+    if interaction.user.id != BOT_OWNER_ID and interaction.user.id != SERVER_OWNER_ID:
+        await interaction.response.send_message(
+            "⛔ Эта команда доступна только создателю бота или владельцу сервера!", 
+            ephemeral=True
+        )
+        return
+    
+    try:
+        user_data = await get_user_data(пользователь.id)
+        
+        embed = discord.Embed(
+            title=f"📊 Детальная информация о {пользователь.display_name}",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        embed.set_thumbnail(url=пользователь.display_avatar.url)
+        
+        # Основная информация
+        embed.add_field(
+            name="👤 Основные данные",
+            value=f"**ID:** `{пользователь.id}`\n"
+                  f"**Имя:** `{пользователь.name}`\n"
+                  f"**Отображаемое имя:** `{пользователь.display_name}`\n"
+                  f"**Бот:** {'✅' if пользователь.bot else '⛔'}",
+            inline=False
+        )
+        
+        # Прогресс
+        embed.add_field(
+            name="📈 Прогресс",
+            value=f"**Общий уровень:** `{user_data['total_level']}`\n"
+                  f"**Общий опыт:** `{user_data['total_xp']:,}`\n"
+                  f"**Престиж:** `{user_data.get('prestige', 0)}/3`",
+            inline=True
+        )
+        
+        # Детали по типам опыта
+        embed.add_field(
+            name="💬 Текстовый чат",
+            value=f"**Уровень:** `{user_data['text_level']}`\n"
+                  f"**Опыт:** `{user_data['text_xp']:,}`",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎤 Голосовой чат", 
+            value=f"**Уровень:** `{user_data['voice_level']}`\n"
+                  f"**Опыт:** `{user_data['voice_xp']:,}`",
+            inline=True
+        )
+        
+        # Кастомный текст
+        profile_text = user_data.get('profile_text')
+        if profile_text:
+            embed.add_field(
+                name="💭 Текст профиля",
+                value=f"```{profile_text}```",
+                inline=False
+            )
+        
+        # Дата последнего обновления
+        last_updated = user_data.get('last_updated')
+        if last_updated:
+            if isinstance(last_updated, datetime):
+                embed.add_field(
+                    name="⏰ Последняя активность",
+                    value=f"<t:{int(last_updated.timestamp())}:R>",
+                    inline=True
+                )
+        
+        # Информация о возможности престижа
+        can_prestige = (
+            user_data.get('prestige', 0) < 3 and 
+            user_data['text_level'] >= 1000 and 
+            user_data['voice_level'] >= 1000
+        )
+        
+        embed.add_field(
+            name="🎯 Статус престижа",
+            value=f"**Доступен:** {'✅' if can_prestige else '⛔'}",
+            inline=True
+        )
+        
+        embed.set_footer(text=f"Запрошено {interaction.user.display_name}")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"Ошибка в команде инфо_юзер: {e}")
+        await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
+
 @bot.tree.command(name="пригласить", description="Пригласить пользователя в голосовой канал через ЛС")
 @app_commands.describe(
     пользователь="Пользователь, которого хотите пригласить",
@@ -2506,6 +2608,9 @@ async def invite_voice_command(
             await interaction.response.send_message("⛔ Нельзя приглашать ботов!", ephemeral=True)
             return
         
+        # Создаем прямую ссылку на голосовой канал
+        voice_link = f"https://discord.com/channels/{interaction.guild.id}/{канал.id}"
+        
         # Формируем embed для приглашения
         invite_embed = discord.Embed(
             title="🎤 Приглашение в голосовой канал!",
@@ -2526,6 +2631,12 @@ async def invite_voice_command(
             inline=True
         )
         
+        invite_embed.add_field(
+            name="🌐 Сервер",
+            value=f"**{interaction.guild.name}**",
+            inline=True
+        )
+        
         # Добавляем кастомное сообщение если есть
         if сообщение:
             invite_embed.add_field(
@@ -2535,8 +2646,8 @@ async def invite_voice_command(
             )
         
         invite_embed.add_field(
-            name="🔗 Как присоединиться?",
-            value=f"Нажмите на канал **{канал.name}** на сервере **{interaction.guild.name}**",
+            name="🔗 Присоединиться",
+            value=f"[Нажми сюда чтобы подключиться]({voice_link})",
             inline=False
         )
         
