@@ -2481,6 +2481,136 @@ async def user_info_command(interaction: discord.Interaction, пользоват
         print(f"Ошибка в команде инфо_юзер: {e}")
         await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
 
+@bot.tree.command(name="пригласить", description="Пригласить пользователя в голосовой канал через ЛС")
+@app_commands.describe(
+    пользователь="Пользователь, которого хотите пригласить",
+    канал="Голосовой канал для приглашения",
+    сообщение="Текст приглашения (необязательно)"
+)
+async def invite_voice_command(
+    interaction: discord.Interaction,
+    пользователь: discord.Member,
+    канал: discord.VoiceChannel,
+    сообщение: str = None
+):
+    """Отправляет приглашение пользователю в ЛС с просьбой присоединиться к голосовому каналу"""
+    
+    try:
+        # Проверяем, что пользователь не приглашает сам себя
+        if пользователь.id == interaction.user.id:
+            await interaction.response.send_message("⛔ Вы не можете пригласить самого себя!", ephemeral=True)
+            return
+        
+        # Проверяем, что это не бот
+        if пользователь.bot:
+            await interaction.response.send_message("⛔ Нельзя приглашать ботов!", ephemeral=True)
+            return
+        
+        # Формируем embed для приглашения
+        invite_embed = discord.Embed(
+            title="🎤 Приглашение в голосовой канал!",
+            description=f"**{interaction.user.display_name}** приглашает вас поболтать в голосовом канале!",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        invite_embed.add_field(
+            name="📍 Канал",
+            value=f"**{канал.name}**",
+            inline=True
+        )
+        
+        invite_embed.add_field(
+            name="👥 Участников в канале",
+            value=f"`{len(канал.members)}`",
+            inline=True
+        )
+        
+        # Добавляем кастомное сообщение если есть
+        if сообщение:
+            invite_embed.add_field(
+                name="💬 Сообщение",
+                value=f"```{сообщение}```",
+                inline=False
+            )
+        
+        invite_embed.add_field(
+            name="🔗 Как присоединиться?",
+            value=f"Нажмите на канал **{канал.name}** на сервере **{interaction.guild.name}**",
+            inline=False
+        )
+        
+        invite_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        invite_embed.set_footer(
+            text=f"Приглашение от {interaction.user.display_name}",
+            icon_url=interaction.user.display_avatar.url
+        )
+        
+        # Пытаемся отправить ЛС пользователю
+        try:
+            await пользователь.send(embed=invite_embed)
+            
+            # Подтверждение отправителю
+            success_embed = discord.Embed(
+                title="✅ Приглашение отправлено!",
+                description=f"Пользователь {пользователь.mention} получил ваше приглашение в ЛС",
+                color=discord.Color.green()
+            )
+            
+            success_embed.add_field(
+                name="📍 Канал",
+                value=f"{канал.mention}",
+                inline=True
+            )
+            
+            if сообщение:
+                success_embed.add_field(
+                    name="💬 Ваше сообщение",
+                    value=f"```{сообщение[:100]}{'...' if len(сообщение) > 100 else ''}```",
+                    inline=False
+                )
+            
+            await interaction.response.send_message(embed=success_embed, ephemeral=True)
+            
+            # Логируем действие
+            await log_action(
+                interaction.guild,
+                "🎤 Приглашение в голосовой канал",
+                f"**Пользователь:** {пользователь.mention}\n"
+                f"**Канал:** {канал.mention}\n"
+                f"**Сообщение:** {сообщение[:100] if сообщение else 'Без текста'}",
+                COLORS['VOICE'],
+                target=пользователь,
+                moderator=interaction.user,
+                extra_fields={
+                    "🎤 Канал": канал.mention,
+                    "💬 Текст": сообщение[:200] if сообщение else "Стандартное приглашение"
+                }
+            )
+            
+        except discord.Forbidden:
+            # Если у пользователя закрыты ЛС
+            error_embed = discord.Embed(
+                title="⛔ Не удалось отправить приглашение",
+                description=f"У пользователя {пользователь.mention} закрыты личные сообщения",
+                color=discord.Color.red()
+            )
+            
+            error_embed.add_field(
+                name="💡 Совет",
+                value="Попробуйте упомянуть пользователя в текстовом канале или позовите его голосом!",
+                inline=False
+            )
+            
+            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            
+    except Exception as e:
+        print(f"Ошибка в команде пригласить: {e}")
+        await interaction.response.send_message(
+            f"⛔ Произошла ошибка при отправке приглашения: {str(e)}", 
+            ephemeral=True
+        )
+
 # Запуск бота
 if __name__ == "__main__":
     bot.run(CONFIG['TOKEN'])
