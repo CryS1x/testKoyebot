@@ -2397,6 +2397,7 @@ async def user_info_command(interaction: discord.Interaction, пользоват
         return
     
     try:
+        # Получаем данные пользователя
         user_data = await get_user_data(пользователь.id)
         
         embed = discord.Embed(
@@ -2450,15 +2451,28 @@ async def user_info_command(interaction: discord.Interaction, пользоват
                 inline=False
             )
         
-        # Дата последнего обновления
+        # Дата последнего обновления (исправленная обработка)
         last_updated = user_data.get('last_updated')
         if last_updated:
-            if isinstance(last_updated, datetime):
-                embed.add_field(
-                    name="⏰ Последняя активность",
-                    value=f"<t:{int(last_updated.timestamp())}:R>",
-                    inline=True
-                )
+            try:
+                # Пробуем разные форматы даты
+                if isinstance(last_updated, datetime):
+                    timestamp = int(last_updated.timestamp())
+                elif isinstance(last_updated, str):
+                    # Если это строка, пытаемся преобразовать
+                    dt = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+                    timestamp = int(dt.timestamp())
+                else:
+                    timestamp = None
+                
+                if timestamp:
+                    embed.add_field(
+                        name="⏰ Последняя активность",
+                        value=f"<t:{timestamp}:R>",
+                        inline=True
+                    )
+            except (ValueError, AttributeError) as e:
+                print(f"Ошибка обработки даты: {e}")
         
         # Информация о возможности престижа
         can_prestige = (
@@ -2479,7 +2493,7 @@ async def user_info_command(interaction: discord.Interaction, пользоват
         
     except Exception as e:
         print(f"Ошибка в команде инфо_юзер: {e}")
-        await interaction.response.send_message("⛔ Произошла ошибка!", ephemeral=True)
+        await interaction.response.send_message("⛔ Произошла ошибка при получении данных!", ephemeral=True)
 
 @bot.tree.command(name="пригласить", description="Пригласить пользователя в голосовой канал через ЛС")
 @app_commands.describe(
@@ -2505,12 +2519,6 @@ async def invite_voice_command(
         if пользователь.bot:
             await interaction.response.send_message("⛔ Нельзя приглашать ботов!", ephemeral=True)
             return
-        
-        # ВАЖНО: Сразу отвечаем на interaction чтобы избежать timeout
-        await interaction.response.defer(ephemeral=True)
-        
-        # Создаем прямую ссылку на голосовой канал
-        voice_link = f"https://discord.com/channels/{interaction.guild.id}/{канал.id}"
         
         # Формируем embed для приглашения
         invite_embed = discord.Embed(
@@ -2546,10 +2554,9 @@ async def invite_voice_command(
                 inline=False
             )
         
-        # Добавляем ссылку БЕЗ маскировки - Discord сам сделает её кликабельной
         invite_embed.add_field(
-            name="🔗 Ссылка для подключения",
-            value=voice_link,
+            name="🔗 Как присоединиться?",
+            value=f"Нажмите на канал **{канал.name}** на сервере **{interaction.guild.name}**",
             inline=False
         )
         
@@ -2583,97 +2590,27 @@ async def invite_voice_command(
                     inline=False
                 )
             
-            # Используем followup вместо response
-            await interaction.followup.send(embed=success_embed, ephemeral=True)
-            
-            # Логируем действие
-            await log_action(
-                interaction.guild,
-                "🎤 Приглашение в голосовой канал",
-                f"**Пользователь:** {пользователь.mention}\n"
-                f"**Канал:** {канал.mention}\n"
-                f"**Сообщение:** {сообщение[:100] if сообщение else 'Без текста'}",
-                COLORS['VOICE'],
-                target=пользователь,
-                moderator=interaction.user,
-                extra_fields={
-                    "🎤 Канал": канал.mention,
-                    "💬 Текст": сообщение[:200] if сообщение else "Стандартное приглашение"
-                }
-            )
-            
-        except discord.Forbidden:
-            # Если у пользователя закрыты ЛС
-            error_embed = discord.Embed(
-                title="⛔ Не удалось отправить приглашение",
-                description=f"У пользователя {пользователь.mention} закрыты личные сообщения",
-                color=discord.Color.red()
-            )
-            
-            error_embed.add_field(
-                name="💡 Совет",
-                value="Попробуйте упомянуть пользователя в текстовом канале или позовите его голосом!",
-                inline=False
-            )
-            
-            # Используем followup
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
-            
-    except Exception as e:
-        print(f"Ошибка в команде пригласить: {e}")
-        try:
-            # Пытаемся отправить ошибку через followup
-            await interaction.followup.send(
-                f"⛔ Произошла ошибка при отправке приглашения: {str(e)}", 
-                ephemeral=True
-            )
-        except:
-            # Если followup не работает, пробуем response
-            try:
-                await interaction.response.send_message(
-                    f"⛔ Произошла ошибка при отправке приглашения: {str(e)}", 
-                    ephemeral=True
-                )
-            except:
-                pass
-            
-            # Подтверждение отправителю
-            success_embed = discord.Embed(
-                title="✅ Приглашение отправлено!",
-                description=f"Пользователь {пользователь.mention} получил ваше приглашение в ЛС",
-                color=discord.Color.green()
-            )
-            
-            success_embed.add_field(
-                name="📍 Канал",
-                value=f"{канал.mention}",
-                inline=True
-            )
-            
-            if сообщение:
-                success_embed.add_field(
-                    name="💬 Ваше сообщение",
-                    value=f"```{сообщение[:100]}{'...' if len(сообщение) > 100 else ''}```",
-                    inline=False
-                )
-            
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
             
-            # Логируем действие
-            await log_action(
-                interaction.guild,
-                "🎤 Приглашение в голосовой канал",
-                f"**Пользователь:** {пользователь.mention}\n"
-                f"**Канал:** {канал.mention}\n"
-                f"**Сообщение:** {сообщение[:100] if сообщение else 'Без текста'}",
-                COLORS['VOICE'],
-                target=пользователь,
-                moderator=interaction.user,
-                extra_fields={
-                    "🎤 Канал": канал.mention,
-                    "💬 Текст": сообщение[:200] if сообщение else "Стандартное приглашение"
-                }
-            )
+            # Логируем действие (если функция log_action существует)
+            try:
+                await log_action(
+                    interaction.guild,
+                    "🎤 Приглашение в голосовой канал",
+                    f"**Пользователь:** {пользователь.mention}\n"
+                    f"**Канал:** {канал.mention}\n"
+                    f"**Сообщение:** {сообщение[:100] if сообщение else 'Без текста'}",
+                    COLORS['VOICE'],
+                    target=пользователь,
+                    moderator=interaction.user,
+                    extra_fields={
+                        "🎤 Канал": канал.mention,
+                        "💬 Текст": сообщение[:200] if сообщение else "Стандартное приглашение"
+                    }
+                )
+            except NameError:
+                # Если log_action не определена, просто пропускаем логирование
+                pass
             
         except discord.Forbidden:
             # Если у пользователя закрыты ЛС
