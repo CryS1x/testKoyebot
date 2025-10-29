@@ -2509,16 +2509,17 @@ async def invite_voice_command(
 ):
     """Отправляет приглашение пользователю в ЛС с просьбой присоединиться к голосовому каналу"""
     
+    # Сразу отвечаем на interaction чтобы избежать timeout
+    await interaction.response.defer(ephemeral=True)
+    
     try:
-        # Проверяем, что пользователь не приглашает сам себя
-        if пользователь.id == interaction.user.id:
-            await interaction.response.send_message("⛔ Вы не можете пригласить самого себя!", ephemeral=True)
-            return
-        
         # Проверяем, что это не бот
         if пользователь.bot:
-            await interaction.response.send_message("⛔ Нельзя приглашать ботов!", ephemeral=True)
+            await interaction.followup.send("⛔ Нельзя приглашать ботов!", ephemeral=True)
             return
+        
+        # Создаем прямую ссылку на голосовой канал
+        voice_link = f"https://discord.com/channels/{interaction.guild.id}/{канал.id}"
         
         # Формируем embed для приглашения
         invite_embed = discord.Embed(
@@ -2554,9 +2555,10 @@ async def invite_voice_command(
                 inline=False
             )
         
+        # Добавляем кликабельную ссылку
         invite_embed.add_field(
-            name="🔗 Как присоединиться?",
-            value=f"Нажмите на канал **{канал.name}** на сервере **{interaction.guild.name}**",
+            name="🔗 Ссылка для подключения",
+            value=f"[Нажмите чтобы присоединиться]({voice_link})",
             inline=False
         )
         
@@ -2590,27 +2592,25 @@ async def invite_voice_command(
                     inline=False
                 )
             
-            await interaction.response.send_message(embed=success_embed, ephemeral=True)
+            await interaction.followup.send(embed=success_embed, ephemeral=True)
             
-            # Логируем действие (если функция log_action существует)
-            try:
-                await log_action(
-                    interaction.guild,
-                    "🎤 Приглашение в голосовой канал",
-                    f"**Пользователь:** {пользователь.mention}\n"
-                    f"**Канал:** {канал.mention}\n"
-                    f"**Сообщение:** {сообщение[:100] if сообщение else 'Без текста'}",
-                    COLORS['VOICE'],
-                    target=пользователь,
-                    moderator=interaction.user,
-                    extra_fields={
-                        "🎤 Канал": канал.mention,
-                        "💬 Текст": сообщение[:200] if сообщение else "Стандартное приглашение"
-                    }
-                )
-            except NameError:
-                # Если log_action не определена, просто пропускаем логирование
-                pass
+            # Логируем действие
+            await log_action(
+                interaction.guild,
+                "🎤 Приглашение в голосовой канал",
+                f"**Пользователь:** {пользователь.mention}\n"
+                f"**Канал:** {канал.mention}\n"
+                f"**Сообщение:** {сообщение[:100] if сообщение else 'Без текста'}\n"
+                f"**Ссылка:** {voice_link}",
+                COLORS['VOICE'],
+                target=пользователь,
+                moderator=interaction.user,
+                extra_fields={
+                    "🎤 Канал": канал.mention,
+                    "💬 Текст": сообщение[:200] if сообщение else "Стандартное приглашение",
+                    "🔗 Ссылка": voice_link
+                }
+            )
             
         except discord.Forbidden:
             # Если у пользователя закрыты ЛС
@@ -2626,11 +2626,11 @@ async def invite_voice_command(
                 inline=False
             )
             
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
             
     except Exception as e:
         print(f"Ошибка в команде пригласить: {e}")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"⛔ Произошла ошибка при отправке приглашения: {str(e)}", 
             ephemeral=True
         )
